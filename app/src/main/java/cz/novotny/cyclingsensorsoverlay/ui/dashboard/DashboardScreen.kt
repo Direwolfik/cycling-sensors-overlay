@@ -27,15 +27,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import cz.novotny.cyclingsensorsoverlay.domain.model.CombinedSensorState
 import cz.novotny.cyclingsensorsoverlay.domain.model.ConnectionState
 import cz.novotny.cyclingsensorsoverlay.domain.model.HeartRateData
 import cz.novotny.cyclingsensorsoverlay.domain.model.PowerData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
+import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
 import cz.novotny.cyclingsensorsoverlay.domain.model.SensorType
+import cz.novotny.cyclingsensorsoverlay.service.OverlayService
 import cz.novotny.cyclingsensorsoverlay.ui.overlay.RadarSideBarWidget
 import cz.novotny.cyclingsensorsoverlay.ui.theme.CyclingSensorsOverlayTheme
+import cz.novotny.cyclingsensorsoverlay.util.PermissionUtils
 
 @Composable
 fun DashboardScreen(
@@ -46,7 +51,16 @@ fun DashboardScreen(
     val isOverlayRunning by viewModel.isOverlayRunning.collectAsState()
     val isRadarSimulated by viewModel.isRadarSimulated.collectAsState()
     val showPermissionDialog by viewModel.showPermissionDialog.collectAsState()
+    val showBluetoothPermissionDialog by viewModel.showBluetoothPermissionDialog.collectAsState()
     val context = LocalContext.current
+
+    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        if (PermissionUtils.hasBluetoothPermission(context) && PermissionUtils.hasOverlayPermission(context)) {
+            OverlayService.startService(context)
+        }
+    }
 
     DashboardContent(
         sensorState = sensorState,
@@ -83,6 +97,42 @@ fun DashboardScreen(
             dismissButton = {
                 TextButton(
                     onClick = { viewModel.dismissPermissionDialog() }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showBluetoothPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissBluetoothPermissionDialog() },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Bluetooth,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = {
+                Text(text = "Bluetooth Permission Required")
+            },
+            text = {
+                Text(text = "To stream live sensor data to the floating overlay, please grant Bluetooth permissions.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.dismissBluetoothPermissionDialog()
+                        bluetoothPermissionLauncher.launch(PermissionUtils.getRequiredBluetoothPermissions())
+                    }
+                ) {
+                    Text("Grant Permission")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { viewModel.dismissBluetoothPermissionDialog() }
                 ) {
                     Text("Cancel")
                 }
@@ -426,15 +476,15 @@ private fun RadarCard(
     isRadarSimulated: Boolean,
     onToggleRadarSimulation: () -> Unit
 ) {
-    val activeThreats = radarData?.threats?.filter { it.threatLevel > 0 } ?: emptyList()
-    val maxThreatLevel = activeThreats.maxOfOrNull { it.threatLevel } ?: 0
+    val activeThreats = radarData?.threats?.filter { it.threatLevel != ThreatLevel.NONE } ?: emptyList()
+    val maxThreatLevel = activeThreats.maxOfOrNull { it.threatLevel } ?: ThreatLevel.NONE
     val closestVehicle = activeThreats.minByOrNull { it.distanceMeters }
 
     val threatColor by animateColorAsState(
         targetValue = when (maxThreatLevel) {
-            2 -> Color(0xFFD32F2F) // High Speed: Red
-            1 -> Color(0xFFF57C00) // Approaching: Amber
-            else -> Color(0xFF388E3C) // No Threat: Green
+            ThreatLevel.HIGH_SPEED -> Color(0xFFD32F2F) // High Speed: Red
+            ThreatLevel.APPROACHING -> Color(0xFFF57C00) // Approaching: Amber
+            ThreatLevel.NONE -> Color(0xFF388E3C) // No Threat: Green
         },
         animationSpec = tween(300),
         label = "ThreatColor"
@@ -480,9 +530,9 @@ private fun RadarCard(
                 ) {
                     Text(
                         text = when (maxThreatLevel) {
-                            2 -> "HIGH SPEED APPROACH"
-                            1 -> "APPROACHING"
-                            else -> "NO THREAT"
+                            ThreatLevel.HIGH_SPEED -> "HIGH SPEED APPROACH"
+                            ThreatLevel.APPROACHING -> "APPROACHING"
+                            ThreatLevel.NONE -> "NO THREAT"
                         },
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = Color.White,
@@ -691,8 +741,8 @@ fun DashboardContentPreview() {
                 heartRateData = HeartRateData(bpm = 152),
                 radarData = RadarData(
                     threats = listOf(
-                        RadarThreat(id = 1, threatLevel = 2, distanceMeters = 45f, speedKmH = 65f),
-                        RadarThreat(id = 2, threatLevel = 1, distanceMeters = 110f, speedKmH = 40f)
+                        RadarThreat(id = 1, threatLevel = ThreatLevel.HIGH_SPEED, distanceMeters = 45f, speedKmH = 65f),
+                        RadarThreat(id = 2, threatLevel = ThreatLevel.APPROACHING, distanceMeters = 110f, speedKmH = 40f)
                     )
                 ),
                 connectionStates = mapOf(

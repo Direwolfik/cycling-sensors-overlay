@@ -3,6 +3,7 @@ package cz.novotny.cyclingsensorsoverlay
 import cz.novotny.cyclingsensorsoverlay.data.ble.parser.CyclingPowerParser
 import cz.novotny.cyclingsensorsoverlay.data.ble.parser.HeartRateParser
 import cz.novotny.cyclingsensorsoverlay.data.ble.parser.RadarParser
+import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -67,7 +68,7 @@ class ParsersTest {
         assertNotNull(result)
         assertEquals(1, result?.threats?.size)
         val threat = result?.threats?.first()
-        assertEquals(2, threat?.threatLevel)
+        assertEquals(ThreatLevel.HIGH_SPEED, threat?.threatLevel)
         assertEquals(30f, threat?.distanceMeters)
         assertEquals(36f, threat?.speedKmH ?: 0f, 0.1f)
     }
@@ -89,11 +90,11 @@ class ParsersTest {
         assertEquals(2, result?.threats?.size)
 
         val t1 = result?.threats?.get(0)
-        assertEquals(1, t1?.threatLevel)
+        assertEquals(ThreatLevel.APPROACHING, t1?.threatLevel)
         assertEquals(40f, t1?.distanceMeters)
 
         val t2 = result?.threats?.get(1)
-        assertEquals(2, t2?.threatLevel)
+        assertEquals(ThreatLevel.HIGH_SPEED, t2?.threatLevel)
         assertEquals(15f, t2?.distanceMeters)
     }
 

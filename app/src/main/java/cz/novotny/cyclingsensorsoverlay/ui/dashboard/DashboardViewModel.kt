@@ -44,6 +44,11 @@ class DashboardViewModel(
     /** StateFlow controlling visibility of the system overlay permission request dialog. */
     val showPermissionDialog: StateFlow<Boolean> = _showPermissionDialog.asStateFlow()
 
+    private val _showBluetoothPermissionDialog = MutableStateFlow(false)
+
+    /** StateFlow controlling visibility of the Bluetooth permission request dialog. */
+    val showBluetoothPermissionDialog: StateFlow<Boolean> = _showBluetoothPermissionDialog.asStateFlow()
+
     /** Toggles rear radar telemetry simulation mode. */
     fun toggleRadarSimulation() {
         val current = isRadarSimulated.value
@@ -52,26 +57,35 @@ class DashboardViewModel(
 
     /**
      * Toggles the floating system overlay service.
-     * Checks for system alert window permission (`SYSTEM_ALERT_WINDOW`); if granted, starts or stops
-     * [OverlayService], otherwise prompts the permission dialog.
+     * Checks for system alert window permission (`SYSTEM_ALERT_WINDOW`) and Bluetooth permissions;
+     * if both are granted, starts or stops [OverlayService], otherwise prompts the appropriate permission dialog.
      *
      * @param context Application context used for checking permissions and starting/stopping service.
      */
     fun toggleOverlay(context: Context) {
-        if (PermissionUtils.hasOverlayPermission(context)) {
-            if (isOverlayRunning.value) {
-                OverlayService.stopService(context)
+        if (isOverlayRunning.value) {
+            OverlayService.stopService(context)
+        } else {
+            val hasOverlay = PermissionUtils.hasOverlayPermission(context)
+            val hasBluetooth = PermissionUtils.hasBluetoothPermission(context)
+            if (!hasOverlay) {
+                _showPermissionDialog.value = true
+            } else if (!hasBluetooth) {
+                _showBluetoothPermissionDialog.value = true
             } else {
                 OverlayService.startService(context)
             }
-        } else {
-            _showPermissionDialog.value = true
         }
     }
 
     /** Dismisses the overlay permission dialog. */
     fun dismissPermissionDialog() {
         _showPermissionDialog.value = false
+    }
+
+    /** Dismisses the bluetooth permission dialog. */
+    fun dismissBluetoothPermissionDialog() {
+        _showBluetoothPermissionDialog.value = false
     }
 
     /** Opens system settings page for granting `SYSTEM_ALERT_WINDOW` permission. */

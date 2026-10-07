@@ -6,6 +6,7 @@ import cz.novotny.cyclingsensorsoverlay.domain.model.HeartRateData
 import cz.novotny.cyclingsensorsoverlay.domain.model.PowerData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
+import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
 import cz.novotny.cyclingsensorsoverlay.domain.model.SensorSlot
 import cz.novotny.cyclingsensorsoverlay.domain.model.SensorType
 import cz.novotny.cyclingsensorsoverlay.domain.repository.BleRepository
@@ -62,7 +63,7 @@ class DashboardViewModelTest {
         fakeBleRepository.powerDataStream.value = PowerData(instantaneousPower = 250, cadence = 90, timestamp = now)
         fakeBleRepository.heartRateDataStream.value = HeartRateData(bpm = 155, timestamp = now)
         fakeBleRepository.radarDataStream.value = RadarData(
-            threats = listOf(RadarThreat(id = 1, threatLevel = 2, distanceMeters = 30f, speedKmH = 60f))
+            threats = listOf(RadarThreat(id = 1, threatLevel = ThreatLevel.HIGH_SPEED, distanceMeters = 30f, speedKmH = 60f))
         )
         advanceUntilIdle()
 
@@ -72,7 +73,7 @@ class DashboardViewModelTest {
         assertEquals(90, state.powerData?.cadence)
         assertEquals(155, state.heartRateData?.bpm)
         assertEquals(1, state.radarData?.threats?.size)
-        assertEquals(2, state.radarData?.threats?.first()?.threatLevel)
+        assertEquals(ThreatLevel.HIGH_SPEED, state.radarData?.threats?.first()?.threatLevel)
     }
 
     @Test

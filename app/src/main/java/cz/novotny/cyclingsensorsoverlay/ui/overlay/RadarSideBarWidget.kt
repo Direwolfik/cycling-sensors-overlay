@@ -12,7 +12,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsBike
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -31,6 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
+import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
+import cz.novotny.cyclingsensorsoverlay.ui.theme.CyclingSensorsOverlayTheme
+import cz.novotny.cyclingsensorsoverlay.ui.theme.overlayColors
 
 @Composable
 fun RadarSideBarWidget(
@@ -42,19 +44,21 @@ fun RadarSideBarWidget(
     onDrag: (dx: Int, dy: Int) -> Unit = { _, _ -> },
     onDragEnd: () -> Unit = {}
 ) {
-    val activeThreats = radarData?.threats?.filter { it.threatLevel > 0 } ?: emptyList()
-    val maxThreatLevel = activeThreats.maxOfOrNull { it.threatLevel } ?: 0
+    val activeThreats = radarData?.threats?.filter { it.threatLevel != ThreatLevel.NONE } ?: emptyList()
+    val maxThreatLevel = activeThreats.maxOfOrNull { it.threatLevel } ?: ThreatLevel.NONE
+
+    val overlayColors = MaterialTheme.overlayColors
 
     val borderAndGlowColor = when (maxThreatLevel) {
-        2 -> Color(0xFFFF1744) // Red for High Speed
-        1 -> Color(0xFFFFB300) // Amber/Yellow for Approaching
-        else -> Color(0x40FFFFFF) // Translucent subtle border when clear
+        ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBanner
+        ThreatLevel.APPROACHING -> overlayColors.threatApproachingBanner
+        ThreatLevel.NONE -> overlayColors.radarBorderClear
     }
 
-    val earBgColor = Color(0xEE1E1E1E)
-
     Box(
-        modifier = modifier.wrapContentSize()
+        modifier = modifier
+            .wrapContentSize()
+            .overlayDragTarget(onDrag, onDragEnd)
     ) {
         // Main Radar Container with top padding so ears sit on top corners protruding outside
         Surface(
@@ -64,11 +68,11 @@ fun RadarSideBarWidget(
                 .height(heightDp.dp)
                 .clip(RoundedCornerShape(24.dp))
                 .border(
-                    width = if (maxThreatLevel > 0) 2.dp else 1.dp,
+                    width = if (maxThreatLevel != ThreatLevel.NONE) 2.dp else 1.dp,
                     color = borderAndGlowColor,
                     shape = RoundedCornerShape(24.dp)
                 ),
-            color = Color(0xD0121212),
+            color = overlayColors.radarBackground,
             contentColor = Color.White,
             shadowElevation = 8.dp
         ) {
@@ -79,24 +83,6 @@ fun RadarSideBarWidget(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Top range label "150m" with touch drag target
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .wrapContentHeight()
-                        .overlayDragTarget(onDrag, onDragEnd),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "150m",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        ),
-                        color = Color.LightGray
-                    )
-                }
-
                 // Central Vertical Radar Line & Threat Track Area
                 Box(
                     modifier = Modifier
@@ -116,9 +102,11 @@ fun RadarSideBarWidget(
                                     colors = listOf(
                                         Color(0x80FFFFFF),
                                         Color(0x40FFFFFF),
-                                        if (maxThreatLevel == 2) Color(0xFFFF1744)
-                                        else if (maxThreatLevel == 1) Color(0xFFFFB300)
-                                        else Color(0x8081C784)
+                                        when (maxThreatLevel) {
+                                            ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBanner
+                                            ThreatLevel.APPROACHING -> overlayColors.threatApproachingBanner
+                                            ThreatLevel.NONE -> overlayColors.riderNormal
+                                        }
                                     )
                                 )
                             )
@@ -157,9 +145,9 @@ fun RadarSideBarWidget(
                 Surface(
                     shape = CircleShape,
                     color = when (maxThreatLevel) {
-                        2 -> Color(0xFFFF1744)
-                        1 -> Color(0xFFFFB300)
-                        else -> Color(0xFF4CAF50)
+                        ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBanner
+                        ThreatLevel.APPROACHING -> overlayColors.threatApproachingBanner
+                        ThreatLevel.NONE -> overlayColors.riderNormal
                     },
                     modifier = Modifier.size(24.dp)
                 ) {
@@ -175,28 +163,6 @@ fun RadarSideBarWidget(
             }
         }
 
-        // Top-Left Mouse Ear: Drag Handle
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 0.dp, y = 0.dp)
-                .size(36.dp)
-                .shadow(4.dp, CircleShape)
-                .overlayDragTarget(onDrag, onDragEnd),
-            shape = CircleShape,
-            color = earBgColor,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Default.DragHandle,
-                    contentDescription = "Move Radar Bar",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-
         // Top-Right Mouse Ear: Close Button
         if (onCloseClick != null) {
             Surface(
@@ -206,7 +172,7 @@ fun RadarSideBarWidget(
                     .size(36.dp)
                     .shadow(4.dp, CircleShape),
                 shape = CircleShape,
-                color = earBgColor,
+                color = overlayColors.earBackground,
                 border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
             ) {
                 IconButton(
@@ -230,6 +196,7 @@ private fun RadarThreatDot(
     threat: RadarThreat,
     maxRangeMeters: Float
 ) {
+    val overlayColors = MaterialTheme.overlayColors
     val targetFraction = (threat.distanceMeters / maxRangeMeters).coerceIn(0f, 1f)
 
     val animatedFraction by animateFloatAsState(
@@ -240,10 +207,10 @@ private fun RadarThreatDot(
 
     val topFraction = (1f - animatedFraction).coerceIn(0f, 1f)
 
-    val dotColor = if (threat.threatLevel == 2) {
-        Color(0xFFFF1744) // Red for High Speed
+    val dotColor = if (threat.threatLevel == ThreatLevel.HIGH_SPEED) {
+        overlayColors.threatHighSpeedBanner
     } else {
-        Color(0xFFFFC107) // Yellow for Approaching
+        overlayColors.threatDotApproaching
     }
 
     BoxWithConstraints(
@@ -270,7 +237,7 @@ private fun RadarThreatDot(
                     modifier = Modifier.size(18.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        if (threat.threatLevel == 2) {
+                        if (threat.threatLevel == ThreatLevel.HIGH_SPEED) {
                             Icon(
                                 imageVector = Icons.Default.Warning,
                                 contentDescription = null,
@@ -282,7 +249,7 @@ private fun RadarThreatDot(
                 }
                 Surface(
                     shape = CircleShape,
-                    color = Color(0xCC000000)
+                    color = overlayColors.threatPillBackground
                 ) {
                     Text(
                         text = "${threat.distanceMeters.toInt()}m",
@@ -317,17 +284,81 @@ private fun Modifier.overlayDragTarget(
     }
 }
 
-@Preview
+@Preview(name = "Radar Sidebar - Clear")
 @Composable
-private fun RadarSideBarWidgetPreview() {
-    MaterialTheme {
+private fun RadarSideBarClearPreview() {
+    CyclingSensorsOverlayTheme {
         Box(
             modifier = Modifier
                 .background(Color.DarkGray)
                 .padding(16.dp)
         ) {
             RadarSideBarWidget(
-                radarData = null,
+                radarData = RadarData(threats = emptyList()),
+                onCloseClick = {}
+            )
+        }
+    }
+}
+
+@Preview(name = "Radar Sidebar - Approaching Threat")
+@Composable
+private fun RadarSideBarApproachingPreview() {
+    CyclingSensorsOverlayTheme {
+        Box(
+            modifier = Modifier
+                .background(Color.DarkGray)
+                .padding(16.dp)
+        ) {
+            RadarSideBarWidget(
+                radarData = RadarData(
+                    threats = listOf(
+                        RadarThreat(id = 1, threatLevel = ThreatLevel.APPROACHING, distanceMeters = 80f, speedKmH = 40f)
+                    )
+                ),
+                onCloseClick = {}
+            )
+        }
+    }
+}
+
+@Preview(name = "Radar Sidebar - High Speed Threat")
+@Composable
+private fun RadarSideBarHighSpeedPreview() {
+    CyclingSensorsOverlayTheme {
+        Box(
+            modifier = Modifier
+                .background(Color.DarkGray)
+                .padding(16.dp)
+        ) {
+            RadarSideBarWidget(
+                radarData = RadarData(
+                    threats = listOf(
+                        RadarThreat(id = 1, threatLevel = ThreatLevel.HIGH_SPEED, distanceMeters = 35f, speedKmH = 85f)
+                    )
+                ),
+                onCloseClick = {}
+            )
+        }
+    }
+}
+
+@Preview(name = "Radar Sidebar - Multiple Threats")
+@Composable
+private fun RadarSideBarMultipleThreatsPreview() {
+    CyclingSensorsOverlayTheme {
+        Box(
+            modifier = Modifier
+                .background(Color.DarkGray)
+                .padding(16.dp)
+        ) {
+            RadarSideBarWidget(
+                radarData = RadarData(
+                    threats = listOf(
+                        RadarThreat(id = 1, threatLevel = ThreatLevel.HIGH_SPEED, distanceMeters = 25f, speedKmH = 75f),
+                        RadarThreat(id = 2, threatLevel = ThreatLevel.APPROACHING, distanceMeters = 110f, speedKmH = 45f)
+                    )
+                ),
                 onCloseClick = {}
             )
         }

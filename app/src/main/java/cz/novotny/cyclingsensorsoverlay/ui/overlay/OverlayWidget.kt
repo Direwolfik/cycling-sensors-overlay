@@ -12,7 +12,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsBike
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Warning
@@ -29,6 +28,13 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cz.novotny.cyclingsensorsoverlay.domain.model.CombinedSensorState
+import cz.novotny.cyclingsensorsoverlay.domain.model.HeartRateData
+import cz.novotny.cyclingsensorsoverlay.domain.model.PowerData
+import cz.novotny.cyclingsensorsoverlay.domain.model.RadarData
+import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
+import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
+import cz.novotny.cyclingsensorsoverlay.ui.theme.CyclingSensorsOverlayTheme
+import cz.novotny.cyclingsensorsoverlay.ui.theme.overlayColors
 
 @Composable
 fun OverlayWidget(
@@ -39,15 +45,17 @@ fun OverlayWidget(
     onDragEnd: () -> Unit = {}
 ) {
     val radarData = sensorState.radarData
-    val activeThreats = radarData?.threats?.filter { it.threatLevel > 0 } ?: emptyList()
-    val maxThreatLevel = activeThreats.maxOfOrNull { it.threatLevel } ?: 0
+    val activeThreats = radarData?.threats?.filter { it.threatLevel != ThreatLevel.NONE } ?: emptyList()
+    val maxThreatLevel = activeThreats.maxOfOrNull { it.threatLevel } ?: ThreatLevel.NONE
     val closestDistance = activeThreats.minOfOrNull { it.distanceMeters }
+
+    val overlayColors = MaterialTheme.overlayColors
 
     val threatBackgroundColor by animateColorAsState(
         targetValue = when (maxThreatLevel) {
-            2 -> Color(0xCCB00020) // High speed threat: Dark Red
-            1 -> Color(0xCCE65100) // Approaching threat: Dark Amber/Orange
-            else -> Color(0xEE121212) // Safe: Dark Grey translucent
+            ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBg
+            ThreatLevel.APPROACHING -> overlayColors.threatApproachingBg
+            ThreatLevel.NONE -> overlayColors.threatSafeBg
         },
         animationSpec = tween(durationMillis = 300),
         label = "ThreatBgColor"
@@ -55,18 +63,18 @@ fun OverlayWidget(
 
     val threatBorderColor by animateColorAsState(
         targetValue = when (maxThreatLevel) {
-            2 -> Color(0xFFFF5252)
-            1 -> Color(0xFFFFB74D)
-            else -> Color(0xFF424242)
+            ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBorder
+            ThreatLevel.APPROACHING -> overlayColors.threatApproachingBorder
+            ThreatLevel.NONE -> overlayColors.threatSafeBorder
         },
         animationSpec = tween(durationMillis = 300),
         label = "ThreatBorderColor"
     )
 
-    val earBgColor = Color(0xEE1E1E1E)
-
     Box(
-        modifier = modifier.wrapContentSize()
+        modifier = modifier
+            .wrapContentSize()
+            .overlayDragTarget(onDrag, onDragEnd)
     ) {
         // Main Content Card with top padding so ears sit on the top corners protruding outside
         Surface(
@@ -86,30 +94,13 @@ fun OverlayWidget(
                     .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Top Edge Drag Handle Strip
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(12.dp)
-                        .overlayDragTarget(onDrag, onDragEnd),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp)
-                            .height(3.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(Color.White.copy(alpha = 0.25f))
-                    )
-                }
-
                 // Compact Sensor Data Card: 3s Power, Cadence, HR
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .wrapContentHeight()
                         .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0x22000000))
+                        .background(overlayColors.sensorCardBackground)
                         .padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -123,7 +114,7 @@ fun OverlayWidget(
                             Icon(
                                 imageVector = Icons.Default.FlashOn,
                                 contentDescription = "Power",
-                                tint = Color(0xFFFFD54F),
+                                tint = overlayColors.power,
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -142,11 +133,11 @@ fun OverlayWidget(
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 18.sp
                             ),
-                            color = Color(0xFFFFD54F)
+                            color = overlayColors.power
                         )
                     }
 
-                    HorizontalDivider(color = Color(0x33FFFFFF), thickness = 0.5.dp)
+                    HorizontalDivider(color = overlayColors.overlayDivider, thickness = 0.5.dp)
 
                     // Cadence & HR side-by-side
                     Row(
@@ -159,7 +150,7 @@ fun OverlayWidget(
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.DirectionsBike,
                                 contentDescription = "Cadence",
-                                tint = Color(0xFF81C784),
+                                tint = overlayColors.cadence,
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -183,7 +174,7 @@ fun OverlayWidget(
                             Icon(
                                 imageVector = Icons.Default.Favorite,
                                 contentDescription = "Heart Rate",
-                                tint = Color(0xFFE57373),
+                                tint = overlayColors.heartRate,
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -198,7 +189,7 @@ fun OverlayWidget(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp
                                 ),
-                                color = Color(0xFFE57373)
+                                color = overlayColors.heartRate
                             )
                         }
                     }
@@ -211,9 +202,9 @@ fun OverlayWidget(
                         .wrapContentHeight(),
                     shape = RoundedCornerShape(8.dp),
                     color = when (maxThreatLevel) {
-                        2 -> Color(0xFFFF1744)
-                        1 -> Color(0xFFFF9100)
-                        else -> Color(0xFF2E2E2E)
+                        ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBanner
+                        ThreatLevel.APPROACHING -> overlayColors.threatApproachingBanner
+                        ThreatLevel.NONE -> overlayColors.threatSafeBanner
                     }
                 ) {
                     Row(
@@ -222,7 +213,7 @@ fun OverlayWidget(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (maxThreatLevel > 0) {
+                            if (maxThreatLevel != ThreatLevel.NONE) {
                                 Icon(
                                     imageVector = Icons.Default.Warning,
                                     contentDescription = "Threat Warning",
@@ -233,9 +224,9 @@ fun OverlayWidget(
                             }
                             Text(
                                 text = when (maxThreatLevel) {
-                                    2 -> "FAST VEHICLE!"
-                                    1 -> "VEHICLE BEHIND"
-                                    else -> "RADAR CLEAR"
+                                    ThreatLevel.HIGH_SPEED -> "FAST VEHICLE!"
+                                    ThreatLevel.APPROACHING -> "VEHICLE BEHIND"
+                                    ThreatLevel.NONE -> "RADAR CLEAR"
                                 },
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.Bold,
@@ -245,7 +236,7 @@ fun OverlayWidget(
                             )
                         }
 
-                        if (maxThreatLevel > 0 && closestDistance != null) {
+                        if (maxThreatLevel != ThreatLevel.NONE && closestDistance != null) {
                             Text(
                                 text = "${closestDistance.toInt()}m (${activeThreats.size})",
                                 style = MaterialTheme.typography.labelSmall.copy(
@@ -260,28 +251,6 @@ fun OverlayWidget(
             }
         }
 
-        // Top-Left Mouse Ear: Drag Handle
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .offset(x = 0.dp, y = 0.dp)
-                .size(36.dp)
-                .shadow(4.dp, CircleShape)
-                .overlayDragTarget(onDrag, onDragEnd),
-            shape = CircleShape,
-            color = earBgColor,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Default.DragHandle,
-                    contentDescription = "Drag Telemetry Overlay",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-
         // Top-Right Mouse Ear: Close Button
         Surface(
             modifier = Modifier
@@ -290,7 +259,7 @@ fun OverlayWidget(
                 .size(36.dp)
                 .shadow(4.dp, CircleShape),
             shape = CircleShape,
-            color = earBgColor,
+            color = overlayColors.earBackground,
             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
         ) {
             IconButton(
@@ -326,17 +295,75 @@ private fun Modifier.overlayDragTarget(
     }
 }
 
-@Preview
+@Preview(name = "Overlay - Clear")
 @Composable
-private fun OverlayWidgetPreview() {
-    MaterialTheme {
+private fun OverlayWidgetClearPreview() {
+    CyclingSensorsOverlayTheme {
         Box(
             modifier = Modifier
                 .background(Color.DarkGray)
                 .padding(16.dp)
         ) {
             OverlayWidget(
-                sensorState = CombinedSensorState(),
+                sensorState = CombinedSensorState(
+                    power3sAverage = 210,
+                    powerData = PowerData(instantaneousPower = 210, cadence = 85),
+                    heartRateData = HeartRateData(bpm = 142),
+                    radarData = RadarData(threats = emptyList())
+                ),
+                onCloseClick = {}
+            )
+        }
+    }
+}
+
+@Preview(name = "Overlay - Approaching Threat")
+@Composable
+private fun OverlayWidgetApproachingPreview() {
+    CyclingSensorsOverlayTheme {
+        Box(
+            modifier = Modifier
+                .background(Color.DarkGray)
+                .padding(16.dp)
+        ) {
+            OverlayWidget(
+                sensorState = CombinedSensorState(
+                    power3sAverage = 285,
+                    powerData = PowerData(instantaneousPower = 290, cadence = 94),
+                    heartRateData = HeartRateData(bpm = 168),
+                    radarData = RadarData(
+                        threats = listOf(
+                            RadarThreat(id = 1, threatLevel = ThreatLevel.APPROACHING, distanceMeters = 75f, speedKmH = 45f)
+                        )
+                    )
+                ),
+                onCloseClick = {}
+            )
+        }
+    }
+}
+
+@Preview(name = "Overlay - High Speed Threat")
+@Composable
+private fun OverlayWidgetHighSpeedPreview() {
+    CyclingSensorsOverlayTheme {
+        Box(
+            modifier = Modifier
+                .background(Color.DarkGray)
+                .padding(16.dp)
+        ) {
+            OverlayWidget(
+                sensorState = CombinedSensorState(
+                    power3sAverage = 340,
+                    powerData = PowerData(instantaneousPower = 355, cadence = 102),
+                    heartRateData = HeartRateData(bpm = 178),
+                    radarData = RadarData(
+                        threats = listOf(
+                            RadarThreat(id = 1, threatLevel = ThreatLevel.HIGH_SPEED, distanceMeters = 30f, speedKmH = 80f),
+                            RadarThreat(id = 2, threatLevel = ThreatLevel.APPROACHING, distanceMeters = 90f, speedKmH = 50f)
+                        )
+                    )
+                ),
                 onCloseClick = {}
             )
         }

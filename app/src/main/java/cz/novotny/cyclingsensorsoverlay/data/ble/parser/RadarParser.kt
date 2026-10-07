@@ -3,6 +3,7 @@ package cz.novotny.cyclingsensorsoverlay.data.ble.parser
 import android.util.Log
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
+import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
 
 /**
  * Robust binary parser for rear cycling radar threat notifications across standard (GATT 0x183C / 0x2B18)
@@ -100,7 +101,7 @@ class RadarParser {
                     val dist = b2.toFloat().coerceIn(0f, 150f)
                     val speed = (b3 * 3.6f).coerceIn(0f, 200f)
 
-                    if (parsedThreat > 0 || dist > 0f) {
+                    if (parsedThreat != ThreatLevel.NONE || dist > 0f) {
                         threats.add(
                             RadarThreat(
                                 id = if (b0 > 0) b0 else targetId++,
@@ -140,7 +141,7 @@ class RadarParser {
             logError("Error parsing radar notification payload", t)
         }
 
-        val activeThreatCount = threats.count { it.threatLevel > 0 }
+        val activeThreatCount = threats.count { it.threatLevel != ThreatLevel.NONE }
         logDebug("Parsed RadarData -> total targets: ${threats.size}, active threats (level > 0): $activeThreatCount, details: $threats")
 
         return RadarData(
@@ -149,20 +150,20 @@ class RadarParser {
         )
     }
 
-    private fun decodeThreatLevel(rawByte: Int): Int {
-        if (rawByte == 0) return 0
-        if (rawByte in 1..2) return rawByte
+    private fun decodeThreatLevel(rawByte: Int): ThreatLevel {
+        if (rawByte == 0) return ThreatLevel.NONE
+        if (rawByte in 1..2) return ThreatLevel.fromValue(rawByte)
 
         // Check upper nibble (bits 4..6)
         val upperNibble = (rawByte shr 4) and 0x07
-        if (upperNibble in 1..2) return upperNibble
+        if (upperNibble in 1..2) return ThreatLevel.fromValue(upperNibble)
 
         // Check lower nibble (bits 0..2)
         val lowerNibble = rawByte and 0x07
-        if (lowerNibble in 1..2) return lowerNibble
+        if (lowerNibble in 1..2) return ThreatLevel.fromValue(lowerNibble)
 
         // Fallback for non-zero threat flags
-        return 1
+        return ThreatLevel.APPROACHING
     }
 
     private fun logDebug(msg: String) {

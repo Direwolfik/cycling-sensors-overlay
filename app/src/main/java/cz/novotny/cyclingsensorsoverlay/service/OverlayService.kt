@@ -142,12 +142,22 @@ class OverlayService : Service() {
             0
         }
 
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            notification,
-            foregroundType
-        )
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                foregroundType
+            )
+        } catch (e: SecurityException) {
+            android.util.Log.e("OverlayService", "SecurityException starting foreground service", e)
+            _isRunning.value = false
+            stopSelf()
+        } catch (e: Exception) {
+            android.util.Log.e("OverlayService", "Exception starting foreground service", e)
+            _isRunning.value = false
+            stopSelf()
+        }
     }
 
     private fun createNotificationChannel() {

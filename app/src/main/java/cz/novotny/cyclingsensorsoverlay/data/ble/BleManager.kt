@@ -86,7 +86,7 @@ class BleManager(private val context: Context) {
                         threats.add(
                             RadarThreat(
                                 id = 1,
-                                threatLevel = 2,
+                                threatLevel = ThreatLevel.HIGH_SPEED,
                                 distanceMeters = v1Dist,
                                 speedKmH = v1Speed
                             )
@@ -96,7 +96,7 @@ class BleManager(private val context: Context) {
                         threats.add(
                             RadarThreat(
                                 id = 2,
-                                threatLevel = 1,
+                                threatLevel = ThreatLevel.APPROACHING,
                                 distanceMeters = v2Dist,
                                 speedKmH = v2Speed
                             )
