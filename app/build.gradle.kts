@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -31,14 +33,28 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    val localProperties = Properties().apply {
+        val localPropertiesFile = rootProject.file("local.properties")
+        if (localPropertiesFile.exists()) {
+            localPropertiesFile.inputStream().use { stream ->
+                load(stream)
+            }
+        }
+    }
+
     signingConfigs {
         create("release") {
-            val keystoreFile = file("${rootDir}/keystore.jks")
+            val keystoreFile = rootProject.file("keystore.jks")
             if (keystoreFile.exists()) {
                 storeFile = keystoreFile
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("ALIAS_PASSWORD") ?: System.getenv("KEY_PASSWORD")
+                storePassword = localProperties.getProperty("KEYSTORE_PASSWORD")
+                    ?: System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = localProperties.getProperty("KEY_ALIAS")
+                    ?: System.getenv("KEY_ALIAS")
+                keyPassword = localProperties.getProperty("ALIAS_PASSWORD")
+                    ?: localProperties.getProperty("KEY_PASSWORD")
+                    ?: System.getenv("ALIAS_PASSWORD")
+                    ?: System.getenv("KEY_PASSWORD")
             }
         }
     }
@@ -47,7 +63,6 @@ android {
         release {
             optimization {
                 enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
             }
             val releaseSigning = signingConfigs.getByName("release")
             if (releaseSigning.storeFile != null) {

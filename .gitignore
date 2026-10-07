@@ -29,7 +29,7 @@ Thumbs.db
 
 # Secrets & Keystores
 local.properties
-keystore
+keystore.jks
 *.jks
 *.keystore
 
