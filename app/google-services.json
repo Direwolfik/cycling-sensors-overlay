@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "607561495202",
+    "project_id": "cycling-sensors-overlay",
+    "storage_bucket": "cycling-sensors-overlay.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:607561495202:android:4cc09e156cde6b3c89ddfb",
+        "android_client_info": {
+          "package_name": "cz.novotny.cyclingsensorsoverlay"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDmBODkeoHi3hhMjKVsts3_WD-ccvXAeRM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

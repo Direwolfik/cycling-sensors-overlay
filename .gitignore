@@ -1,15 +1,40 @@
 *.iml
 .gradle
 /local.properties
+
+# Build & Kotlin caches
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+.kotlin/
+
+# IDE files (Ignored user & machine specific state)
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+/.idea/deploymentTargetSelector.xml
+/.idea/deviceManager.xml
+/.idea/appInsightsSettings.xml
+/.idea/AndroidProjectSystem.xml
+/.idea/shelf/
+
+# OS generated files
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+Thumbs.db
+
+# Secrets & Keystores
 local.properties
+keystore
+*.jks
+*.keystore
+
+# Local build outputs
+/app/debug/
+
+# AI Agent local state
+.agent/
