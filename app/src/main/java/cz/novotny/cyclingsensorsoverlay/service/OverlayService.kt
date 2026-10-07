@@ -262,6 +262,14 @@ class OverlayService : Service() {
                     val state by sensorState.collectAsState()
                     RadarSideBarWidget(
                         radarData = state.radarData,
+                        onCloseClick = {
+                            radarComposeView?.let { view ->
+                                try {
+                                    windowManager.removeView(view)
+                                } catch (_: Exception) {}
+                            }
+                            radarComposeView = null
+                        },
                         onDrag = { dx, dy ->
                             radarWindowParams.x = (radarWindowParams.x - dx).coerceAtLeast(0)
                             radarWindowParams.y += dy

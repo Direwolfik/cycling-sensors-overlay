@@ -328,10 +328,11 @@ class BleManager(private val context: Context) {
                     return
                 }
 
+                Log.d(TAG, "Discovered services for $sensorType:")
                 for (service in gatt.services) {
-                    Log.d("BleManager", "Discovered service: ${service.uuid}")
+                    Log.d(TAG, "  Service UUID: ${service.uuid}")
                     for (char in service.characteristics) {
-                        Log.d("BleManager", "  Char: ${char.uuid}, props: ${char.properties}")
+                        Log.d(TAG, "    Char UUID: ${char.uuid}, props: 0x${char.properties.toString(16)}")
                     }
                 }
 
@@ -342,36 +343,53 @@ class BleManager(private val context: Context) {
                     return
                 }
 
-                Log.d(TAG, "Selected characteristic ${characteristic.uuid} for $sensorType")
+                Log.d(TAG, "Selected primary characteristic ${characteristic.uuid} for $sensorType")
 
-                val enabled = gatt.setCharacteristicNotification(characteristic, true)
-                if (!enabled) {
-                    Log.e(TAG, "Failed to set characteristic notification for $sensorType")
-                    updateConnectionState(sensorType, ConnectionState.ERROR)
-                    return
+                if (sensorType == SensorType.RADAR) {
+                    // For Radar, enable notifications/indications on ALL notify/indicate characteristics found across services
+                    for (service in gatt.services) {
+                        for (c in service.characteristics) {
+                            if (isNotifyOrIndicate(c)) {
+                                val setOk = gatt.setCharacteristicNotification(c, true)
+                                Log.d(TAG, "Radar setCharacteristicNotification on ${c.uuid} -> $setOk")
+                            }
+                        }
+                    }
+                } else {
+                    val enabled = gatt.setCharacteristicNotification(characteristic, true)
+                    Log.d(TAG, "setCharacteristicNotification on ${characteristic.uuid} -> $enabled")
                 }
 
                 val descriptor = characteristic.getDescriptor(BleConstants.CCCD_UUID)
                 if (descriptor != null) {
-                    val value = if ((characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
-                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    } else {
+                    val props = characteristic.properties
+                    val value = if ((props and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0 &&
+                        (props and BluetoothGattCharacteristic.PROPERTY_NOTIFY) == 0
+                    ) {
                         BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                    } else {
+                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                     }
-                    @Suppress("DEPRECATION")
-                    descriptor.value = value
-                    gatt.writeDescriptor(descriptor, value)
+
+                    val res = gatt.writeDescriptor(descriptor, value)
+                    val success = (res == BluetoothGatt.GATT_SUCCESS)
+                    Log.d(TAG, "writeDescriptor for CCCD on ${characteristic.uuid} returned: $success")
                 } else {
-                    Log.w(TAG, "CCCD descriptor not found for characteristic ${characteristic.uuid}")
+                    Log.w(TAG, "CCCD descriptor (0x2902) not found for characteristic ${characteristic.uuid}")
                 }
 
                 updateConnectionState(sensorType, ConnectionState.CONNECTED)
+            }
+
+            override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+                Log.d(TAG, "onDescriptorWrite for char ${descriptor.characteristic?.uuid}, status=$status (${if (status == BluetoothGatt.GATT_SUCCESS) "SUCCESS" else "FAILED"})")
             }
 
             @Deprecated("Deprecated in Java")
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 @Suppress("DEPRECATION")
                 val value = characteristic.value ?: return
+                Log.d(TAG, "onCharacteristicChanged (legacy) [$sensorType] [Char ${characteristic.uuid}]: ${value.joinToString(" ") { "%02X".format(it) }}")
                 handleDataChanged(sensorType, value)
             }
 
@@ -380,6 +398,7 @@ class BleManager(private val context: Context) {
                 characteristic: BluetoothGattCharacteristic,
                 value: ByteArray
             ) {
+                Log.d(TAG, "onCharacteristicChanged [$sensorType] [Char ${characteristic.uuid}]: ${value.joinToString(" ") { "%02X".format(it) }}")
                 handleDataChanged(sensorType, value)
             }
         }

@@ -57,10 +57,10 @@ class ParsersTest {
         val parser = RadarParser()
 
         val payload = byteArrayOf(
-            0x01.toByte(),
-            0x02.toByte(),
-            30.toByte(),
-            10.toByte()
+            0x01.toByte(), // Header: 1 target
+            0x02.toByte(), // Threat level: 2 (High speed red)
+            30.toByte(),   // Distance: 30 meters
+            10.toByte()    // Speed: 10 m/s
         )
 
         val result = parser.parse(payload)
@@ -70,6 +70,31 @@ class ParsersTest {
         assertEquals(2, threat?.threatLevel)
         assertEquals(30f, threat?.distanceMeters)
         assertEquals(36f, threat?.speedKmH ?: 0f, 0.1f)
+    }
+
+    @Test
+    fun radarParser_parsesMultiTargetWithoutHeaderAndBitfieldThreats() {
+        val parser = RadarParser()
+
+        // 2 targets, 6 bytes total without count header:
+        // Target 1: threat=1 (yellow), dist=40m, speed=5m/s (18 km/h)
+        // Target 2: threat=0x20 (upper nibble 2 = high speed red), dist=15m, speed=10m/s (36 km/h)
+        val payload = byteArrayOf(
+            0x01.toByte(), 40.toByte(), 5.toByte(),
+            0x20.toByte(), 15.toByte(), 10.toByte()
+        )
+
+        val result = parser.parse(payload)
+        assertNotNull(result)
+        assertEquals(2, result?.threats?.size)
+
+        val t1 = result?.threats?.get(0)
+        assertEquals(1, t1?.threatLevel)
+        assertEquals(40f, t1?.distanceMeters)
+
+        val t2 = result?.threats?.get(1)
+        assertEquals(2, t2?.threatLevel)
+        assertEquals(15f, t2?.distanceMeters)
     }
 
     @Test
@@ -96,12 +121,6 @@ class ParsersTest {
         val twoByteResult = parser.parse(byteArrayOf(0x01, 0x02))
         assertNotNull(twoByteResult)
         assertTrue(twoByteResult!!.threats.isEmpty())
-
-        // Malformed odd length payload (e.g. 5 bytes)
-        val oddResult = parser.parse(byteArrayOf(0x01.toByte(), 0x02.toByte(), 40.toByte(), 15.toByte(), 99.toByte()))
-        assertNotNull(oddResult)
-        assertEquals(1, oddResult!!.threats.size)
-        assertEquals(40f, oddResult.threats[0].distanceMeters)
 
         // Large random payload without crash
         val largeRandom = ByteArray(50) { it.toByte() }

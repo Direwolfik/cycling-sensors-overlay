@@ -1,20 +1,27 @@
 package cz.novotny.cyclingsensorsoverlay.data.ble.parser
 
+import android.util.Log
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
 
 /**
- * Binary parser for rear cycling radar threat notifications across standard (GATT 0x183C / 0x2B18)
- * and vendor-custom protocols (e.g., Garmin Varia / Coospo 0x6E40).
+ * Robust binary parser for rear cycling radar threat notifications across standard (GATT 0x183C / 0x2B18)
+ * and vendor custom protocols (e.g., Garmin Varia, Coospo TR70, Magene L508, Bryton Gardia, IGPSPORT).
  *
- * Payload structure:
- * - Byte 0: Header / Target count indicator (0 = no targets detected; 1..10 = explicit threat count).
- * - Target records (2 or 3 bytes per vehicle target):
- *   - Byte 0: Threat level urgency (0 = clear/low, 1..2 = medium/high or bitmask flags).
- *   - Byte 1: Raw distance in meters (coerced to 0..250m).
- *   - Byte 2 (optional): Relative approach speed in m/s, converted to km/h (* 3.6f, coerced to 0..200 km/h).
+ * Payload structures handled:
+ * 1) Standard GATT Cycling Radar (0x2B18):
+ *    - Byte 0: Threat Count N (0 = clear, 1..N = targets).
+ *    - Records (3 or 4 bytes per target):
+ *      - Threat level: 0 = Clear, 1 = Approaching (Yellow), 2 = High Speed (Red).
+ *      - Distance: 0..150m (clamped).
+ *      - Speed: Relative speed (m/s converted to km/h).
+ * 2) Garmin Varia / Vendor Raw Payloads:
+ *    - Handled with or without header bytes, supporting 3-byte and 4-byte chunk streams.
+ *    - Flexible threat level extraction (direct, upper/lower nibble bitfield).
+ *    - Smart distance/threat byte ordering fallback.
  */
 class RadarParser {
+
     /**
      * Parses raw BLE notification bytes into a [RadarData] snapshot containing vehicle threat list.
      *
@@ -24,63 +31,157 @@ class RadarParser {
     fun parse(data: ByteArray?): RadarData? {
         if (data == null || data.isEmpty()) return null
 
+        val hexString = data.joinToString(" ") { "%02X".format(it) }
+        logDebug("Parsing raw BLE radar packet (len=${data.size}): [$hexString]")
+
         val threats = mutableListOf<RadarThreat>()
 
         try {
-            if (data.size >= 3) {
-                val header = data[0].toInt() and 0xFF
+            // Case 1: Single byte payload (e.g. 0x00 = NO THREAT)
+            if (data.size == 1) {
+                val singleVal = data[0].toInt() and 0xFF
+                logDebug("Single byte radar payload: $singleVal")
+                return RadarData(
+                    threats = emptyList(),
+                    timestamp = System.currentTimeMillis()
+                )
+            }
 
-                if (header == 0) {
-                    // 0 targets detected by radar
-                    return RadarData(
-                        threats = emptyList(),
-                        timestamp = System.currentTimeMillis()
-                    )
+            val firstByte = data[0].toInt() and 0xFF
+            val remainingLen = data.size - 1
+
+            // Determine target count & record start offset
+            val (targetCount, startOffset, recordSize) = when {
+                // Header is magic Vendor prefix e.g. 0xFA, 0xAA
+                firstByte >= 0xF0 -> {
+                    val count = data[1].toInt() and 0xFF
+                    val rSize = if ((data.size - 2) >= count * 4) 4 else 3
+                    Triple(count, 2, rSize)
                 }
-
-                val hasExplicitHeader = header in 1..10
-                val targetCount = if (hasExplicitHeader) header else 10
-                var offset = if (hasExplicitHeader) 1 else 0
-                var targetId = 1
-
-                while (offset + 1 < data.size && threats.size < targetCount) {
-                    val rawThreat = data[offset].toInt() and 0xFF
-                    val rawDist = data[offset + 1].toInt() and 0xFF
-
-                    var rawSpeed = 0
-                    if (offset + 2 < data.size) {
-                        rawSpeed = data[offset + 2].toInt() and 0xFF
-                        offset += 3
-                    } else {
-                        offset += 2
-                    }
-
-                    val threatLevel = when {
-                        rawThreat == 0 -> 0
-                        rawThreat in 1..2 -> rawThreat
-                        else -> (rawThreat and 0x03).coerceIn(0, 2)
-                    }
-
-                    val distanceMeters = rawDist.toFloat().coerceIn(0f, 250f)
-                    val speedKmH = (rawSpeed * 3.6f).coerceIn(0f, 200f)
-
-                    threats.add(
-                        RadarThreat(
-                            id = targetId++,
-                            threatLevel = threatLevel,
-                            distanceMeters = distanceMeters,
-                            speedKmH = speedKmH
-                        )
-                    )
+                // Header is explicit count in 1..10 where remaining payload exactly matches target record size
+                firstByte in 1..10 && (remainingLen == firstByte * 3 || remainingLen == firstByte * 4) -> {
+                    val rSize = if (remainingLen == firstByte * 4) 4 else 3
+                    Triple(firstByte, 1, rSize)
+                }
+                // No explicit count header: entire payload is target record chunks starting at index 0
+                data.size % 4 == 0 -> Triple(data.size / 4, 0, 4)
+                data.size % 3 == 0 -> Triple(data.size / 3, 0, 3)
+                else -> {
+                    // Fallback chunking: treat byte 0 as header if > 0, else 0
+                    val count = if (firstByte in 1..10) firstByte else 10
+                    Triple(count, if (firstByte in 1..10) 1 else 0, 3)
                 }
             }
-        } catch (_: Throwable) {
-            // Gracefully ignore unexpected malformed payload
+
+            if (targetCount == 0) {
+                logDebug("Parsed 0 targets (Radar Clear)")
+                return RadarData(threats = emptyList(), timestamp = System.currentTimeMillis())
+            }
+
+            var offset = startOffset
+            var targetId = 1
+
+            while (offset + 1 < data.size && threats.size < targetCount) {
+                val b0 = data[offset].toInt() and 0xFF
+                val b1 = data[offset + 1].toInt() and 0xFF
+
+                var b2 = 0
+                var nextOffsetIncrement = 2
+
+                if (recordSize >= 3 && offset + 2 < data.size) {
+                    b2 = data[offset + 2].toInt() and 0xFF
+                    nextOffsetIncrement = 3
+                }
+                if (recordSize >= 4 && offset + 3 < data.size) {
+                    // If 4-byte chunk [ID, Threat, Dist, Speed]
+                    val b3 = data[offset + 3].toInt() and 0xFF
+                    nextOffsetIncrement = 4
+                    val parsedThreat = decodeThreatLevel(b1)
+                    val dist = b2.toFloat().coerceIn(0f, 150f)
+                    val speed = (b3 * 3.6f).coerceIn(0f, 200f)
+
+                    if (parsedThreat > 0 || dist > 0f) {
+                        threats.add(
+                            RadarThreat(
+                                id = if (b0 > 0) b0 else targetId++,
+                                threatLevel = parsedThreat,
+                                distanceMeters = dist,
+                                speedKmH = speed
+                            )
+                        )
+                    }
+                    offset += nextOffsetIncrement
+                    continue
+                }
+
+                offset += nextOffsetIncrement
+
+                // In 2 or 3 byte chunk: evaluate threat level vs distance with smart order fallback
+                val (rawThreat, rawDist) = when {
+                    b0 in 0..2 && b1 > 2 -> Pair(b0, b1)
+                    b0 > 2 && b1 in 0..2 -> Pair(b1, b0)
+                    else -> Pair(b0, b1)
+                }
+
+                val threatLevel = decodeThreatLevel(rawThreat)
+                val distanceMeters = rawDist.toFloat().coerceIn(0f, 150f)
+                val speedKmH = (b2 * 3.6f).coerceIn(0f, 200f)
+
+                threats.add(
+                    RadarThreat(
+                        id = targetId++,
+                        threatLevel = threatLevel,
+                        distanceMeters = distanceMeters,
+                        speedKmH = speedKmH
+                    )
+                )
+            }
+        } catch (t: Throwable) {
+            logError("Error parsing radar notification payload", t)
         }
+
+        val activeThreatCount = threats.count { it.threatLevel > 0 }
+        logDebug("Parsed RadarData -> total targets: ${threats.size}, active threats (level > 0): $activeThreatCount, details: $threats")
 
         return RadarData(
             threats = threats,
             timestamp = System.currentTimeMillis()
         )
+    }
+
+    private fun decodeThreatLevel(rawByte: Int): Int {
+        if (rawByte == 0) return 0
+        if (rawByte in 1..2) return rawByte
+
+        // Check upper nibble (bits 4..6)
+        val upperNibble = (rawByte shr 4) and 0x07
+        if (upperNibble in 1..2) return upperNibble
+
+        // Check lower nibble (bits 0..2)
+        val lowerNibble = rawByte and 0x07
+        if (lowerNibble in 1..2) return lowerNibble
+
+        // Fallback for non-zero threat flags
+        return 1
+    }
+
+    private fun logDebug(msg: String) {
+        try {
+            Log.d(TAG, msg)
+        } catch (_: Throwable) {
+            println("[$TAG] $msg")
+        }
+    }
+
+    private fun logError(msg: String, t: Throwable? = null) {
+        try {
+            Log.e(TAG, msg, t)
+        } catch (_: Throwable) {
+            println("[$TAG] $msg: ${t?.message}")
+        }
+    }
+
+    companion object {
+        private const val TAG = "RadarParser"
     }
 }
