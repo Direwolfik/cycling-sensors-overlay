@@ -126,4 +126,5 @@ CyclingSensorsOverlay/
 
 ## 📄 License
 
-This project is licensed under the MIT License.
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+You are free to use, copy, modify, and distribute this software for **personal and non-commercial purposes only**. Commercial distribution, sale, or monetization is strictly prohibited.
