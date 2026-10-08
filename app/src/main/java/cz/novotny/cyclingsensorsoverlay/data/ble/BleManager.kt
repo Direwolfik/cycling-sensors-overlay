@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import cz.novotny.cyclingsensorsoverlay.data.ble.parser.CyclingPowerParser
 import cz.novotny.cyclingsensorsoverlay.data.ble.parser.HeartRateParser
@@ -272,6 +273,11 @@ class BleManager(private val context: Context) {
      * @param sensorType Sensor type slot to disconnect.
      */
     fun disconnectSlot(sensorType: SensorType) {
+        if (sensorType == SensorType.RADAR) {
+            radarWatchdogJob?.cancel()
+            radarWatchdogJob = null
+            radarDataStream.value = null
+        }
         val gatt = activeGatts.remove(sensorType)
         activeSlots.remove(sensorType)
         if (gatt != null) {
@@ -371,7 +377,14 @@ class BleManager(private val context: Context) {
                         BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                     }
 
-                    val res = gatt.writeDescriptor(descriptor, value)
+                    @Suppress("DEPRECATION")
+                    descriptor.value = value
+                    val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeDescriptor(descriptor, value)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        if (gatt.writeDescriptor(descriptor)) BluetoothGatt.GATT_SUCCESS else -1
+                    }
                     val success = (res == BluetoothGatt.GATT_SUCCESS)
                     Log.d(TAG, "writeDescriptor for CCCD on ${characteristic.uuid} returned: $success")
                 } else {
@@ -564,6 +577,22 @@ class BleManager(private val context: Context) {
         return str == target || str.startsWith("0000$target") || str.startsWith(target)
     }
 
+    private var radarWatchdogJob: Job? = null
+
+    private fun resetRadarWatchdog() {
+        radarWatchdogJob?.cancel()
+        radarWatchdogJob = scope.launch {
+            delay(3500L)
+            if (radarDataStream.value?.threats?.isNotEmpty() == true) {
+                Log.d(TAG, "Radar watchdog timeout (3.5s). Clearing stale radar threats.")
+                radarDataStream.value = RadarData(
+                    threats = emptyList(),
+                    timestamp = System.currentTimeMillis()
+                )
+            }
+        }
+    }
+
     private fun handleDataChanged(sensorType: SensorType, data: ByteArray) {
         when (sensorType) {
             SensorType.POWER -> {
@@ -577,6 +606,7 @@ class BleManager(private val context: Context) {
                 }
             }
             SensorType.RADAR -> {
+                resetRadarWatchdog()
                 radarParser.parse(data)?.let { parsed ->
                     radarDataStream.value = parsed
                 }

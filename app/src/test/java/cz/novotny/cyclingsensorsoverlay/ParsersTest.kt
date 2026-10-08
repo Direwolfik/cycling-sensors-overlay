@@ -99,6 +99,56 @@ class ParsersTest {
     }
 
     @Test
+    fun radarParser_parsesTR70AndVariaPayloadsAccurately() {
+        val parser = RadarParser()
+
+        // 3-byte record with explicit count header = 1: ID=1, Threat=1 (Approaching), Distance=80m
+        val tr70Payload80m = byteArrayOf(
+            0x01.toByte(), // Target count: 1
+            0x01.toByte(), // Threat level: 1 (Approaching yellow)
+            80.toByte()    // Distance: 80 meters
+        )
+
+        val res80m = parser.parse(tr70Payload80m)
+        assertNotNull(res80m)
+        assertEquals(1, res80m?.threats?.size)
+        val t80 = res80m?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, t80?.threatLevel)
+        assertEquals(80f, t80?.distanceMeters)
+
+        // 3-byte record with explicit count header = 1: ID=1, Threat=1, Distance=18m
+        val tr70Payload18m = byteArrayOf(
+            0x01.toByte(), // Target count: 1
+            0x01.toByte(), // Threat level: 1 (Approaching yellow)
+            18.toByte()    // Distance: 18 meters
+        )
+
+        val res18m = parser.parse(tr70Payload18m)
+        assertNotNull(res18m)
+        assertEquals(1, res18m?.threats?.size)
+        val t18 = res18m?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, t18?.threatLevel)
+        assertEquals(18f, t18?.distanceMeters)
+    }
+
+    @Test
+    fun radarParser_handlesMultiByteClearPackets() {
+        val parser = RadarParser()
+
+        // 2-byte clear payload: count = 0
+        val clear2Byte = byteArrayOf(0x00, 0x00)
+        val res2Byte = parser.parse(clear2Byte)
+        assertNotNull(res2Byte)
+        assertTrue(res2Byte!!.threats.isEmpty())
+
+        // Vendor prefix clear payload: 0xFA (prefix), 0x00 (0 targets)
+        val vendorClear = byteArrayOf(0xFA.toByte(), 0x00)
+        val resVendor = parser.parse(vendorClear)
+        assertNotNull(resVendor)
+        assertTrue(resVendor!!.threats.isEmpty())
+    }
+
+    @Test
     fun radarParser_handlesEdgeCasesAndMalformedPayloads() {
         val parser = RadarParser()
 
@@ -117,11 +167,6 @@ class ParsersTest {
         val singleByteResult = parser.parse(byteArrayOf(0x05))
         assertNotNull(singleByteResult)
         assertTrue(singleByteResult!!.threats.isEmpty())
-
-        // 2-byte payload
-        val twoByteResult = parser.parse(byteArrayOf(0x01, 0x02))
-        assertNotNull(twoByteResult)
-        assertTrue(twoByteResult!!.threats.isEmpty())
 
         // Large random payload without crash
         val largeRandom = ByteArray(50) { it.toByte() }

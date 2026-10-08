@@ -38,28 +38,27 @@ class RadarParser {
         val threats = mutableListOf<RadarThreat>()
 
         try {
-            // Case 1: Single byte payload (e.g. 0x00 = NO THREAT)
-            if (data.size == 1) {
-                val singleVal = data[0].toInt() and 0xFF
-                logDebug("Single byte radar payload: $singleVal")
-                return RadarData(
-                    threats = emptyList(),
-                    timestamp = System.currentTimeMillis()
-                )
+            val firstByte = data[0].toInt() and 0xFF
+
+            // Case 1: Header indicates 0 targets (e.g. 0x00, or payload starting with 0x00 = Radar Clear)
+            if (firstByte == 0) {
+                logDebug("Header indicates 0 targets (Radar Clear)")
+                return RadarData(threats = emptyList(), timestamp = System.currentTimeMillis())
             }
 
-            val firstByte = data[0].toInt() and 0xFF
             val remainingLen = data.size - 1
 
-            // Determine target count & record start offset
+            // Determine target count & record start offset & chunk size
             val (targetCount, startOffset, recordSize) = when {
                 // Header is magic Vendor prefix e.g. 0xFA, 0xAA
                 firstByte >= 0xF0 -> {
+                    if (data.size < 2) return RadarData(threats = emptyList(), timestamp = System.currentTimeMillis())
                     val count = data[1].toInt() and 0xFF
+                    if (count == 0) return RadarData(threats = emptyList(), timestamp = System.currentTimeMillis())
                     val rSize = if ((data.size - 2) >= count * 4) 4 else 3
                     Triple(count, 2, rSize)
                 }
-                // Header is explicit count in 1..10 where remaining payload exactly matches target record size
+                // Header is explicit count in 1..10 where remaining payload matches target record size
                 firstByte in 1..10 && (remainingLen == firstByte * 3 || remainingLen == firstByte * 4) -> {
                     val rSize = if (remainingLen == firstByte * 4) 4 else 3
                     Triple(firstByte, 1, rSize)
@@ -68,9 +67,9 @@ class RadarParser {
                 data.size % 4 == 0 -> Triple(data.size / 4, 0, 4)
                 data.size % 3 == 0 -> Triple(data.size / 3, 0, 3)
                 else -> {
-                    // Fallback chunking: treat byte 0 as header if > 0, else 0
-                    val count = if (firstByte in 1..10) firstByte else 10
-                    Triple(count, if (firstByte in 1..10) 1 else 0, 3)
+                    val count = if (firstByte in 1..10) firstByte else (data.size / 3).coerceAtLeast(1)
+                    val sOffset = if (firstByte in 1..10) 1 else 0
+                    Triple(count, sOffset, 3)
                 }
             }
 
@@ -86,22 +85,16 @@ class RadarParser {
                 val b0 = data[offset].toInt() and 0xFF
                 val b1 = data[offset + 1].toInt() and 0xFF
 
-                var b2 = 0
-                var nextOffsetIncrement = 2
-
-                if (recordSize >= 3 && offset + 2 < data.size) {
-                    b2 = data[offset + 2].toInt() and 0xFF
-                    nextOffsetIncrement = 3
-                }
                 if (recordSize >= 4 && offset + 3 < data.size) {
-                    // If 4-byte chunk [ID, Threat, Dist, Speed]
+                    // 4-byte chunk: [Target ID/Index, Threat Level, Distance, Speed]
+                    val b2 = data[offset + 2].toInt() and 0xFF
                     val b3 = data[offset + 3].toInt() and 0xFF
-                    nextOffsetIncrement = 4
+
                     val parsedThreat = decodeThreatLevel(b1)
                     val dist = b2.toFloat().coerceIn(0f, 150f)
                     val speed = (b3 * 3.6f).coerceIn(0f, 200f)
 
-                    if (parsedThreat != ThreatLevel.NONE || dist > 0f) {
+                    if (parsedThreat != ThreatLevel.NONE) {
                         threats.add(
                             RadarThreat(
                                 id = if (b0 > 0) b0 else targetId++,
@@ -111,44 +104,91 @@ class RadarParser {
                             )
                         )
                     }
-                    offset += nextOffsetIncrement
+                    offset += 4
                     continue
                 }
 
-                offset += nextOffsetIncrement
+                if (offset + 2 < data.size) {
+                    // 3-byte chunk: [b0, b1, b2]
+                    val b2 = data[offset + 2].toInt() and 0xFF
+                    offset += 3
 
-                // In 2 or 3 byte chunk: evaluate threat level vs distance with smart order fallback
-                val (rawThreat, rawDist) = when {
-                    b0 in 0..2 && b1 > 2 -> Pair(b0, b1)
-                    b0 > 2 && b1 in 0..2 -> Pair(b1, b0)
-                    else -> Pair(b0, b1)
+                    val (threatLevel, distanceMeters, speedKmH, idVal) = when {
+                        // b1 is threat level (0..2) and b2 is distance (> 2 or b0 in 1..10): [ID, Threat, Dist]
+                        b1 in 0..2 && (b2 > 2 || b0 in 1..10) -> {
+                            val t = decodeThreatLevel(b1)
+                            val d = b2.toFloat().coerceIn(0f, 150f)
+                            val id = if (b0 in 1..15) b0 else targetId++
+                            Quad(t, d, 0f, id)
+                        }
+                        // b0 is threat level (0..2) and b1 is distance: [Threat, Dist, Speed]
+                        b0 in 0..2 && b1 > 2 -> {
+                            val t = decodeThreatLevel(b0)
+                            val d = b1.toFloat().coerceIn(0f, 150f)
+                            val s = (b2 * 3.6f).coerceIn(0f, 200f)
+                            Quad(t, d, s, targetId++)
+                        }
+                        // b2 is threat level (0..2) and b1 is distance: [ID, Dist, Threat]
+                        b2 in 0..2 && b1 > 2 -> {
+                            val t = decodeThreatLevel(b2)
+                            val d = b1.toFloat().coerceIn(0f, 150f)
+                            val id = if (b0 in 1..15) b0 else targetId++
+                            Quad(t, d, 0f, id)
+                        }
+                        // Fallback: search for threat level byte among b0, b1, b2
+                        else -> {
+                            val t = decodeThreatLevel(b0)
+                            val d = maxOf(b1, b2).toFloat().coerceIn(0f, 150f)
+                            Quad(t, d, 0f, targetId++)
+                        }
+                    }
+
+                    if (threatLevel != ThreatLevel.NONE) {
+                        threats.add(
+                            RadarThreat(
+                                id = idVal,
+                                threatLevel = threatLevel,
+                                distanceMeters = distanceMeters,
+                                speedKmH = speedKmH
+                            )
+                        )
+                    }
+                } else {
+                    // 2-byte chunk fallback
+                    val threatLevel = decodeThreatLevel(b0)
+                    val dist = b1.toFloat().coerceIn(0f, 150f)
+                    if (threatLevel != ThreatLevel.NONE) {
+                        threats.add(
+                            RadarThreat(
+                                id = targetId++,
+                                threatLevel = threatLevel,
+                                distanceMeters = dist,
+                                speedKmH = 0f
+                            )
+                        )
+                    }
+                    offset += 2
                 }
-
-                val threatLevel = decodeThreatLevel(rawThreat)
-                val distanceMeters = rawDist.toFloat().coerceIn(0f, 150f)
-                val speedKmH = (b2 * 3.6f).coerceIn(0f, 200f)
-
-                threats.add(
-                    RadarThreat(
-                        id = targetId++,
-                        threatLevel = threatLevel,
-                        distanceMeters = distanceMeters,
-                        speedKmH = speedKmH
-                    )
-                )
             }
         } catch (t: Throwable) {
             logError("Error parsing radar notification payload", t)
         }
 
-        val activeThreatCount = threats.count { it.threatLevel != ThreatLevel.NONE }
-        logDebug("Parsed RadarData -> total targets: ${threats.size}, active threats (level > 0): $activeThreatCount, details: $threats")
+        val activeThreats = threats.filter { it.threatLevel != ThreatLevel.NONE }
+        logDebug("Parsed RadarData -> total targets: ${threats.size}, active threats (level > 0): ${activeThreats.size}, details: $activeThreats")
 
         return RadarData(
-            threats = threats,
+            threats = activeThreats,
             timestamp = System.currentTimeMillis()
         )
     }
+
+    private data class Quad(
+        val threatLevel: ThreatLevel,
+        val distanceMeters: Float,
+        val speedKmH: Float,
+        val id: Int
+    )
 
     private fun decodeThreatLevel(rawByte: Int): ThreatLevel {
         if (rawByte == 0) return ThreatLevel.NONE
