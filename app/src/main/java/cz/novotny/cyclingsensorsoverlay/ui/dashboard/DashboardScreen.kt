@@ -163,6 +163,10 @@ fun DashboardContent(
             onToggleOverlay = onToggleOverlay
         )
 
+
+        // Sensor Slot Connection Status Card
+        SensorConnectionStatusCard(connectionStates = sensorState.connectionStates)
+
         // Power Dashboard Card (3s Power & Instantaneous Power)
         PowerCard(
             power3s = sensorState.power3sAverage,
@@ -190,9 +194,6 @@ fun DashboardContent(
             isRadarSimulated = isRadarSimulated,
             onToggleRadarSimulation = onToggleRadarSimulation
         )
-
-        // Sensor Slot Connection Status Card
-        SensorConnectionStatusCard(connectionStates = sensorState.connectionStates)
     }
 }
 

@@ -12,7 +12,6 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation3.runtime.NavEntry
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.rememberNavBackStack
@@ -23,6 +22,7 @@ import cz.novotny.cyclingsensorsoverlay.ui.scanner.ScannerScreen
 import cz.novotny.cyclingsensorsoverlay.ui.scanner.ScannerViewModel
 import cz.novotny.cyclingsensorsoverlay.ui.theme.CyclingSensorsOverlayTheme
 import kotlinx.serialization.Serializable
+import org.koin.androidx.compose.koinViewModel
 
 @Serializable
 data object DashboardRoute : NavKey
@@ -39,7 +39,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             CyclingSensorsOverlayTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    val app = application as CyclingOverlayApplication
                     val backStack = rememberNavBackStack(DashboardRoute)
                     val currentRoute = backStack.lastOrNull()
 
@@ -94,15 +93,11 @@ class MainActivity : ComponentActivity() {
                         ) { key ->
                             when (key) {
                                 is DashboardRoute -> NavEntry(key) {
-                                    val dashboardViewModel: DashboardViewModel = viewModel(
-                                        factory = DashboardViewModelFactory(app)
-                                    )
+                                    val dashboardViewModel: DashboardViewModel = koinViewModel()
                                     DashboardScreen(viewModel = dashboardViewModel)
                                 }
                                 is ScannerRoute -> NavEntry(key) {
-                                    val scannerViewModel: ScannerViewModel = viewModel(
-                                        factory = ScannerViewModelFactory(app)
-                                    )
+                                    val scannerViewModel: ScannerViewModel = koinViewModel()
                                     ScannerScreen(viewModel = scannerViewModel)
                                 }
                                 else -> NavEntry(key) {}

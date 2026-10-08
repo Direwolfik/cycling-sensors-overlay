@@ -23,13 +23,15 @@ import androidx.core.content.edit
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import cz.novotny.cyclingsensorsoverlay.CyclingOverlayApplication
 import cz.novotny.cyclingsensorsoverlay.MainActivity
 import cz.novotny.cyclingsensorsoverlay.domain.model.CombinedSensorState
+import cz.novotny.cyclingsensorsoverlay.domain.usecase.ObserveSensorDataUseCase
 import cz.novotny.cyclingsensorsoverlay.ui.overlay.OverlayWidget
 import cz.novotny.cyclingsensorsoverlay.ui.overlay.RadarSideBarWidget
 import cz.novotny.cyclingsensorsoverlay.ui.theme.CyclingSensorsOverlayTheme
 import cz.novotny.cyclingsensorsoverlay.util.OverlayLifecycleOwner
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -50,7 +52,7 @@ import kotlinx.coroutines.launch
  * - WindowManager Layout Setup: Configures non-focusable floating window parameters (`FLAG_NOT_FOCUSABLE` | `FLAG_LAYOUT_IN_SCREEN`), persisting user drag positions to `SharedPreferences`.
  * - Dual Jetpack Compose Overlays: Renders [OverlayWidget] (power, 3s power average, HR, cadence) and [RadarSideBarWidget] (rear radar vehicle approach sidebar) concurrently.
  */
-class OverlayService : Service() {
+class OverlayService : Service(), KoinComponent {
 
     companion object {
         private const val NOTIFICATION_ID = 1001
@@ -79,6 +81,8 @@ class OverlayService : Service() {
         }
     }
 
+    private val observeSensorDataUseCase: ObserveSensorDataUseCase by inject()
+
     private lateinit var windowManager: WindowManager
     private var telemetryComposeView: ComposeView? = null
     private var radarComposeView: ComposeView? = null
@@ -99,9 +103,6 @@ class OverlayService : Service() {
         overlayLifecycleOwner.onCreate()
         overlayLifecycleOwner.onStart()
         overlayLifecycleOwner.onResume()
-
-        val app = application as CyclingOverlayApplication
-        val observeSensorDataUseCase = app.observeSensorDataUseCase
 
         serviceScope.launch {
             observeSensorDataUseCase().collect { state ->
