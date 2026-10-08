@@ -18,6 +18,8 @@ import cz.novotny.cyclingsensorsoverlay.domain.usecase.ScanSensorsUseCase
 import cz.novotny.cyclingsensorsoverlay.ui.dashboard.DashboardViewModel
 import cz.novotny.cyclingsensorsoverlay.ui.scanner.ScannerViewModel
 
+import cz.novotny.cyclingsensorsoverlay.util.AppLogger
+
 class CyclingOverlayApplication : Application() {
 
     lateinit var bleManager: BleManager
@@ -44,6 +46,9 @@ class CyclingOverlayApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        AppLogger.init(this)
+        AppLogger.i("Application", "Cycling Overlay Application initialized with Firebase logging enabled")
+
         bleManager = BleManager(this)
         bleRepository = BleRepositoryImpl(bleManager)
         slotRepository = SensorSlotRepositoryImpl(this)

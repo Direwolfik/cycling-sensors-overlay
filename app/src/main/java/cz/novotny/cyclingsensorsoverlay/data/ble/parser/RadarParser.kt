@@ -1,9 +1,9 @@
 package cz.novotny.cyclingsensorsoverlay.data.ble.parser
 
-import android.util.Log
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
 import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
+import cz.novotny.cyclingsensorsoverlay.util.AppLogger
 
 /**
  * Robust binary parser for rear cycling radar threat notifications across standard (GATT 0x183C / 0x2B18)
@@ -33,7 +33,8 @@ class RadarParser {
         if (data == null || data.isEmpty()) return null
 
         val hexString = data.joinToString(" ") { "%02X".format(it) }
-        logDebug("Parsing raw BLE radar packet (len=${data.size}): [$hexString]")
+        AppLogger.d(TAG, "Parsing raw BLE radar packet (len=${data.size}): [$hexString]")
+        AppLogger.setCustomKey("last_radar_packet_hex", hexString)
 
         val threats = mutableListOf<RadarThreat>()
 
@@ -42,7 +43,8 @@ class RadarParser {
 
             // Case 1: Header indicates 0 targets (e.g. 0x00, or payload starting with 0x00 = Radar Clear)
             if (firstByte == 0) {
-                logDebug("Header indicates 0 targets (Radar Clear)")
+                AppLogger.d(TAG, "Header indicates 0 targets (Radar Clear)")
+                AppLogger.setCustomKey("last_radar_threat_count", 0)
                 return RadarData(threats = emptyList(), timestamp = System.currentTimeMillis())
             }
 
@@ -74,7 +76,8 @@ class RadarParser {
             }
 
             if (targetCount == 0) {
-                logDebug("Parsed 0 targets (Radar Clear)")
+                AppLogger.d(TAG, "Parsed 0 targets (Radar Clear)")
+                AppLogger.setCustomKey("last_radar_threat_count", 0)
                 return RadarData(threats = emptyList(), timestamp = System.currentTimeMillis())
             }
 
@@ -171,11 +174,12 @@ class RadarParser {
                 }
             }
         } catch (t: Throwable) {
-            logError("Error parsing radar notification payload", t)
+            AppLogger.e(TAG, "Error parsing radar notification payload", t)
         }
 
         val activeThreats = threats.filter { it.threatLevel != ThreatLevel.NONE }
-        logDebug("Parsed RadarData -> total targets: ${threats.size}, active threats (level > 0): ${activeThreats.size}, details: $activeThreats")
+        AppLogger.d(TAG, "Parsed RadarData -> total targets: ${threats.size}, active threats: ${activeThreats.size}, details: $activeThreats")
+        AppLogger.setCustomKey("last_radar_threat_count", activeThreats.size)
 
         return RadarData(
             threats = activeThreats,
@@ -204,22 +208,6 @@ class RadarParser {
 
         // Fallback for non-zero threat flags
         return ThreatLevel.APPROACHING
-    }
-
-    private fun logDebug(msg: String) {
-        try {
-            Log.d(TAG, msg)
-        } catch (_: Throwable) {
-            println("[$TAG] $msg")
-        }
-    }
-
-    private fun logError(msg: String, t: Throwable? = null) {
-        try {
-            Log.e(TAG, msg, t)
-        } catch (_: Throwable) {
-            println("[$TAG] $msg: ${t?.message}")
-        }
     }
 
     companion object {
