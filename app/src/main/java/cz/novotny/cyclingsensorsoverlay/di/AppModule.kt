@@ -2,6 +2,7 @@ package cz.novotny.cyclingsensorsoverlay.di
 
 import cz.novotny.cyclingsensorsoverlay.data.ble.BleManager
 import cz.novotny.cyclingsensorsoverlay.data.ble.BleRepositoryImpl
+import cz.novotny.cyclingsensorsoverlay.data.location.GpsLocationManager
 import cz.novotny.cyclingsensorsoverlay.data.repository.SensorSlotRepositoryImpl
 import cz.novotny.cyclingsensorsoverlay.domain.repository.BleRepository
 import cz.novotny.cyclingsensorsoverlay.domain.repository.SensorSlotRepository
@@ -25,6 +26,7 @@ import org.koin.dsl.module
 val appModule = module {
     // Data sources & Repositories
     single { BleManager(androidContext()) }
+    single { GpsLocationManager(androidContext()) }
     singleOf(::BleRepositoryImpl) { bind<BleRepository>() }
     single<SensorSlotRepository> { SensorSlotRepositoryImpl(androidContext()) }
 

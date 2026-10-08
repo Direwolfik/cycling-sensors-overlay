@@ -12,6 +12,7 @@ val Pink40 = Color(0xFF7D5260)
 
 // Cycling Overlay Telemetry & Sensor Colors
 val PowerYellow = Color(0xFFFFD54F)
+val SpeedBlue = Color(0xFF4FC3F7)
 val CadenceGreen = Color(0xFF81C784)
 val HeartRateRed = Color(0xFFE57373)
 

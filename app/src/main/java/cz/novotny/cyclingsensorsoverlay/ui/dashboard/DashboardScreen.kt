@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -52,6 +53,7 @@ fun DashboardScreen(
     val isRadarSimulated by viewModel.isRadarSimulated.collectAsState()
     val showPermissionDialog by viewModel.showPermissionDialog.collectAsState()
     val showBluetoothPermissionDialog by viewModel.showBluetoothPermissionDialog.collectAsState()
+    val showLocationPermissionDialog by viewModel.showLocationPermissionDialog.collectAsState()
     val context = LocalContext.current
 
     val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
@@ -59,6 +61,23 @@ fun DashboardScreen(
     ) {
         if (PermissionUtils.hasBluetoothPermission(context) && PermissionUtils.hasOverlayPermission(context)) {
             OverlayService.startService(context)
+        }
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val isGranted = permissions.values.any { it }
+        if (isGranted) {
+            viewModel.startGpsTracking()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (PermissionUtils.hasLocationPermission(context)) {
+            viewModel.startGpsTracking()
+        } else {
+            locationPermissionLauncher.launch(PermissionUtils.getRequiredLocationPermissions())
         }
     }
 
@@ -133,6 +152,42 @@ fun DashboardScreen(
             dismissButton = {
                 TextButton(
                     onClick = { viewModel.dismissBluetoothPermissionDialog() }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showLocationPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissLocationPermissionDialog() },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Speed,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = {
+                Text(text = "Location Permission Required")
+            },
+            text = {
+                Text(text = "To measure live speed via GPS when riding, please grant location permissions.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.dismissLocationPermissionDialog()
+                        locationPermissionLauncher.launch(PermissionUtils.getRequiredLocationPermissions())
+                    }
+                ) {
+                    Text("Grant Permission")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { viewModel.dismissLocationPermissionDialog() }
                 ) {
                     Text("Cancel")
                 }

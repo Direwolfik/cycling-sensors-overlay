@@ -3,8 +3,9 @@ package cz.novotny.cyclingsensorsoverlay.ui.dashboard
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import cz.novotny.cyclingsensorsoverlay.domain.repository.BleRepository
+import cz.novotny.cyclingsensorsoverlay.data.location.GpsLocationManager
 import cz.novotny.cyclingsensorsoverlay.domain.model.CombinedSensorState
+import cz.novotny.cyclingsensorsoverlay.domain.repository.BleRepository
 import cz.novotny.cyclingsensorsoverlay.domain.usecase.ObserveSensorDataUseCase
 import cz.novotny.cyclingsensorsoverlay.service.OverlayService
 import cz.novotny.cyclingsensorsoverlay.util.PermissionUtils
@@ -17,12 +18,13 @@ import kotlinx.coroutines.flow.stateIn
 /**
  * ViewModel for the main dashboard screen.
  *
- * Observes combined real-time sensor streams (power, 3-second moving power average, heart rate, and radar threats),
- * controls radar simulation mode, and manages system overlay foreground service toggling with permission handling.
+ * Observes combined real-time sensor streams (power, 3-second moving power average, heart rate, radar threats, and GPS speed),
+ * controls radar simulation mode, manages GPS location updates, and manages system overlay foreground service toggling with permission handling.
  */
 class DashboardViewModel(
     observeSensorDataUseCase: ObserveSensorDataUseCase,
-    private val bleRepository: BleRepository
+    private val bleRepository: BleRepository,
+    private val gpsLocationManager: GpsLocationManager
 ) : ViewModel() {
 
     /** StateFlow emitting real-time combined telemetry data and sensor slot connection states. */
@@ -49,6 +51,16 @@ class DashboardViewModel(
     /** StateFlow controlling visibility of the Bluetooth permission request dialog. */
     val showBluetoothPermissionDialog: StateFlow<Boolean> = _showBluetoothPermissionDialog.asStateFlow()
 
+    private val _showLocationPermissionDialog = MutableStateFlow(false)
+
+    /** StateFlow controlling visibility of the Location permission request dialog. */
+    val showLocationPermissionDialog: StateFlow<Boolean> = _showLocationPermissionDialog.asStateFlow()
+
+    /** Initiates active GPS location tracking for real-time speed calculation. */
+    fun startGpsTracking() {
+        gpsLocationManager.startLocationUpdates()
+    }
+
     /** Toggles rear radar telemetry simulation mode. */
     fun toggleRadarSimulation() {
         val current = isRadarSimulated.value
@@ -68,11 +80,15 @@ class DashboardViewModel(
         } else {
             val hasOverlay = PermissionUtils.hasOverlayPermission(context)
             val hasBluetooth = PermissionUtils.hasBluetoothPermission(context)
+            val hasLocation = PermissionUtils.hasLocationPermission(context)
             if (!hasOverlay) {
                 _showPermissionDialog.value = true
             } else if (!hasBluetooth) {
                 _showBluetoothPermissionDialog.value = true
+            } else if (!hasLocation) {
+                _showLocationPermissionDialog.value = true
             } else {
+                startGpsTracking()
                 OverlayService.startService(context)
             }
         }
@@ -86,6 +102,11 @@ class DashboardViewModel(
     /** Dismisses the bluetooth permission dialog. */
     fun dismissBluetoothPermissionDialog() {
         _showBluetoothPermissionDialog.value = false
+    }
+
+    /** Dismisses the location permission dialog. */
+    fun dismissLocationPermissionDialog() {
+        _showLocationPermissionDialog.value = false
     }
 
     /** Opens system settings page for granting `SYSTEM_ALERT_WINDOW` permission. */

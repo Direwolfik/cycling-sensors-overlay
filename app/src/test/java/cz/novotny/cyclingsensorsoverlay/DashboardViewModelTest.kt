@@ -1,14 +1,17 @@
 package cz.novotny.cyclingsensorsoverlay
 
+import android.content.Context
+import android.content.ContextWrapper
+import cz.novotny.cyclingsensorsoverlay.data.location.GpsLocationManager
 import cz.novotny.cyclingsensorsoverlay.domain.model.ConnectionState
 import cz.novotny.cyclingsensorsoverlay.domain.model.DiscoveredDevice
 import cz.novotny.cyclingsensorsoverlay.domain.model.HeartRateData
 import cz.novotny.cyclingsensorsoverlay.domain.model.PowerData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarData
 import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
-import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
 import cz.novotny.cyclingsensorsoverlay.domain.model.SensorSlot
 import cz.novotny.cyclingsensorsoverlay.domain.model.SensorType
+import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
 import cz.novotny.cyclingsensorsoverlay.domain.repository.BleRepository
 import cz.novotny.cyclingsensorsoverlay.domain.usecase.ObserveSensorDataUseCase
 import cz.novotny.cyclingsensorsoverlay.ui.dashboard.DashboardViewModel
@@ -38,14 +41,20 @@ class DashboardViewModelTest {
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var fakeBleRepository: FakeBleRepository
     private lateinit var observeSensorDataUseCase: ObserveSensorDataUseCase
+    private lateinit var gpsLocationManager: GpsLocationManager
     private lateinit var viewModel: DashboardViewModel
 
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        val dummyContext = object : ContextWrapper(null) {
+            override fun getApplicationContext(): Context = this
+            override fun getSystemService(name: String): Any? = null
+        }
         fakeBleRepository = FakeBleRepository()
-        observeSensorDataUseCase = ObserveSensorDataUseCase(fakeBleRepository)
-        viewModel = DashboardViewModel(observeSensorDataUseCase, fakeBleRepository)
+        gpsLocationManager = GpsLocationManager(dummyContext)
+        observeSensorDataUseCase = ObserveSensorDataUseCase(fakeBleRepository, gpsLocationManager)
+        viewModel = DashboardViewModel(observeSensorDataUseCase, fakeBleRepository, gpsLocationManager)
     }
 
     @After

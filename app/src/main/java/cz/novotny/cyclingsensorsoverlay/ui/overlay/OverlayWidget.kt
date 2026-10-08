@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.DirectionsBike
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,6 +36,7 @@ import cz.novotny.cyclingsensorsoverlay.domain.model.RadarThreat
 import cz.novotny.cyclingsensorsoverlay.domain.model.ThreatLevel
 import cz.novotny.cyclingsensorsoverlay.ui.theme.CyclingSensorsOverlayTheme
 import cz.novotny.cyclingsensorsoverlay.ui.theme.overlayColors
+import java.util.Locale
 
 @Composable
 fun OverlayWidget(
@@ -51,16 +53,6 @@ fun OverlayWidget(
 
     val overlayColors = MaterialTheme.overlayColors
 
-    val threatBackgroundColor by animateColorAsState(
-        targetValue = when (maxThreatLevel) {
-            ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBg
-            ThreatLevel.APPROACHING -> overlayColors.threatApproachingBg
-            ThreatLevel.NONE -> overlayColors.threatSafeBg
-        },
-        animationSpec = tween(durationMillis = 300),
-        label = "ThreatBgColor"
-    )
-
     val threatBorderColor by animateColorAsState(
         targetValue = when (maxThreatLevel) {
             ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBorder
@@ -70,6 +62,24 @@ fun OverlayWidget(
         animationSpec = tween(durationMillis = 300),
         label = "ThreatBorderColor"
     )
+
+    val radarBannerBg = when (maxThreatLevel) {
+        ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBorder.copy(alpha = 0.15f)
+        ThreatLevel.APPROACHING -> overlayColors.threatApproachingBorder.copy(alpha = 0.15f)
+        ThreatLevel.NONE -> overlayColors.sensorCardBackground
+    }
+
+    val radarBannerBorder = when (maxThreatLevel) {
+        ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBorder
+        ThreatLevel.APPROACHING -> overlayColors.threatApproachingBorder
+        ThreatLevel.NONE -> overlayColors.overlayDivider
+    }
+
+    val radarBannerContentColor = when (maxThreatLevel) {
+        ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBorder
+        ThreatLevel.APPROACHING -> overlayColors.threatApproachingBorder
+        ThreatLevel.NONE -> Color.LightGray
+    }
 
     Box(
         modifier = modifier
@@ -83,8 +93,12 @@ fun OverlayWidget(
                 .width(220.dp)
                 .wrapContentHeight()
                 .clip(RoundedCornerShape(16.dp))
-                .border(1.5.dp, threatBorderColor, RoundedCornerShape(16.dp)),
-            color = threatBackgroundColor,
+                .border(
+                    width = if (maxThreatLevel != ThreatLevel.NONE) 2.dp else 1.5.dp,
+                    color = threatBorderColor,
+                    shape = RoundedCornerShape(16.dp)
+                ),
+            color = overlayColors.threatSafeBg,
             contentColor = Color.White,
             shadowElevation = 8.dp
         ) {
@@ -94,7 +108,7 @@ fun OverlayWidget(
                     .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Compact Sensor Data Card: 3s Power, Cadence, HR
+                // Compact Sensor Data Card: 3s Power & Speed, Cadence & HR
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -104,37 +118,74 @@ fun OverlayWidget(
                         .padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // 3s Power
+                    // 3s Power & Current Speed on same line
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // 3s Power
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.FlashOn,
                                 contentDescription = "Power",
                                 tint = overlayColors.power,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(3.dp))
                             Text(
-                                text = "3s Power",
+                                text = "3s ",
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    fontSize = 11.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = FontWeight.SemiBold
                                 ),
                                 color = Color.LightGray
                             )
+                            Text(
+                                text = sensorState.power3sAverage?.let { "$it W" } ?: "--",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 14.sp
+                                ),
+                                color = overlayColors.power
+                            )
                         }
-                        Text(
-                            text = sensorState.power3sAverage?.let { "${it} W" } ?: "--",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 18.sp
-                            ),
-                            color = overlayColors.power
-                        )
+
+                        // Current Speed
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Speed,
+                                contentDescription = "Speed",
+                                tint = overlayColors.speed,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "SPD ",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                color = Color.LightGray
+                            )
+                            Text(
+                                text = sensorState.effectiveSpeedKmh?.let { String.format(Locale.US, "%.1f", it) } ?: "--",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 14.sp
+                                ),
+                                color = overlayColors.speed
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                text = "km/h",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Normal
+                                ),
+                                color = Color.Gray
+                            )
+                        }
                     }
 
                     HorizontalDivider(color = overlayColors.overlayDivider, thickness = 0.5.dp)
@@ -184,7 +235,7 @@ fun OverlayWidget(
                                 color = Color.Gray
                             )
                             Text(
-                                text = sensorState.heartRateData?.bpm?.let { "$it" } ?: "--",
+                                text = sensorState.heartRateData?.bpm?.toString() ?: "--",
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp
@@ -195,20 +246,17 @@ fun OverlayWidget(
                     }
                 }
 
-                // Radar Alert Banner
+                // Radar Alert Banner with subtle tint background and clear warning border
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .wrapContentHeight(),
+                        .wrapContentHeight()
+                        .border(1.dp, radarBannerBorder, RoundedCornerShape(8.dp)),
                     shape = RoundedCornerShape(8.dp),
-                    color = when (maxThreatLevel) {
-                        ThreatLevel.HIGH_SPEED -> overlayColors.threatHighSpeedBanner
-                        ThreatLevel.APPROACHING -> overlayColors.threatApproachingBanner
-                        ThreatLevel.NONE -> overlayColors.threatSafeBanner
-                    }
+                    color = radarBannerBg
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -217,7 +265,7 @@ fun OverlayWidget(
                                 Icon(
                                     imageVector = Icons.Default.Warning,
                                     contentDescription = "Threat Warning",
-                                    tint = Color.White,
+                                    tint = radarBannerContentColor,
                                     modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -232,18 +280,18 @@ fun OverlayWidget(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 11.sp
                                 ),
-                                color = Color.White
+                                color = radarBannerContentColor
                             )
                         }
 
-                        if (maxThreatLevel != ThreatLevel.NONE && closestDistance != null) {
+                        if ((maxThreatLevel != ThreatLevel.NONE) && (closestDistance != null)) {
                             Text(
                                 text = "${closestDistance.toInt()}m (${activeThreats.size})",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 11.sp
                                 ),
-                                color = Color.White
+                                color = radarBannerContentColor
                             )
                         }
                     }
@@ -307,7 +355,7 @@ private fun OverlayWidgetClearPreview() {
             OverlayWidget(
                 sensorState = CombinedSensorState(
                     power3sAverage = 210,
-                    powerData = PowerData(instantaneousPower = 210, cadence = 85),
+                    powerData = PowerData(instantaneousPower = 210, cadence = 85, speedKmh = 28.5f),
                     heartRateData = HeartRateData(bpm = 142),
                     radarData = RadarData(threats = emptyList())
                 ),
@@ -329,7 +377,7 @@ private fun OverlayWidgetApproachingPreview() {
             OverlayWidget(
                 sensorState = CombinedSensorState(
                     power3sAverage = 285,
-                    powerData = PowerData(instantaneousPower = 290, cadence = 94),
+                    powerData = PowerData(instantaneousPower = 290, cadence = 94, speedKmh = 32.4f),
                     heartRateData = HeartRateData(bpm = 168),
                     radarData = RadarData(
                         threats = listOf(
@@ -355,7 +403,7 @@ private fun OverlayWidgetHighSpeedPreview() {
             OverlayWidget(
                 sensorState = CombinedSensorState(
                     power3sAverage = 340,
-                    powerData = PowerData(instantaneousPower = 355, cadence = 102),
+                    powerData = PowerData(instantaneousPower = 355, cadence = 102, speedKmh = 38.0f),
                     heartRateData = HeartRateData(bpm = 178),
                     radarData = RadarData(
                         threats = listOf(

@@ -11,9 +11,10 @@ import androidx.core.content.ContextCompat
 
 data class PermissionsState(
     val hasBluetoothPermission: Boolean = false,
-    val hasOverlayPermission: Boolean = false
+    val hasOverlayPermission: Boolean = false,
+    val hasLocationPermission: Boolean = false
 ) {
-    val allGranted: Boolean get() = hasBluetoothPermission && hasOverlayPermission
+    val allGranted: Boolean get() = hasBluetoothPermission && hasOverlayPermission && hasLocationPermission
 }
 
 object PermissionUtils {
@@ -32,11 +33,29 @@ object PermissionUtils {
         }
     }
 
+    fun getRequiredLocationPermissions(): Array<String> {
+        return arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+    }
+
     fun hasBluetoothPermission(context: Context): Boolean {
         val permissions = getRequiredBluetoothPermissions()
         return permissions.all { permission ->
             ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
         }
+    }
+
+    fun hasLocationPermission(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     fun hasOverlayPermission(context: Context): Boolean {
@@ -46,7 +65,8 @@ object PermissionUtils {
     fun checkPermissionsState(context: Context): PermissionsState {
         return PermissionsState(
             hasBluetoothPermission = hasBluetoothPermission(context),
-            hasOverlayPermission = hasOverlayPermission(context)
+            hasOverlayPermission = hasOverlayPermission(context),
+            hasLocationPermission = hasLocationPermission(context)
         )
     }
 

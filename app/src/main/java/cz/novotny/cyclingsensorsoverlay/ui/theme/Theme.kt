@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 @Immutable
 data class OverlayColorScheme(
     val power: Color = PowerYellow,
+    val speed: Color = SpeedBlue,
     val cadence: Color = CadenceGreen,
     val heartRate: Color = HeartRateRed,
     val threatSafeBg: Color = ThreatSafeBg,
@@ -66,7 +67,7 @@ fun CyclingSensorsOverlayTheme(
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+        dynamicColor -> {
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
