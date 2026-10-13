@@ -14,6 +14,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.Queue
 
 /**
  * Low-level Bluetooth Low Energy (BLE) manager handling multi-slot sensor connections, device discovery scanning,
@@ -268,6 +270,53 @@ class BleManager(private val context: Context) {
         }
     }
 
+    private val pendingDescriptorWrites = ConcurrentHashMap<BluetoothGatt, Queue<Pair<BluetoothGattDescriptor, ByteArray>>>()
+
+    private fun queueCccdWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        val descriptor = characteristic.getDescriptor(BleConstants.CCCD_UUID) ?: run {
+            AppLogger.w(TAG, "CCCD descriptor (0x2902) not found for characteristic ${characteristic.uuid}")
+            return
+        }
+        val props = characteristic.properties
+        val value = if ((props and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0 &&
+            (props and BluetoothGattCharacteristic.PROPERTY_NOTIFY) == 0
+        ) {
+            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+        } else {
+            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        }
+
+        val queue = pendingDescriptorWrites.getOrPut(gatt) { ConcurrentLinkedQueue() }
+        queue.add(descriptor to value)
+        if (queue.size == 1) {
+            processNextDescriptorWrite(gatt)
+        }
+    }
+
+    private fun processNextDescriptorWrite(gatt: BluetoothGatt) {
+        val queue = pendingDescriptorWrites[gatt] ?: return
+        val next = queue.peek() ?: run {
+            pendingDescriptorWrites.remove(gatt)
+            return
+        }
+        val (descriptor, value) = next
+        @Suppress("DEPRECATION")
+        descriptor.value = value
+        val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, value)
+        } else {
+            @Suppress("DEPRECATION")
+            if (gatt.writeDescriptor(descriptor)) BluetoothGatt.GATT_SUCCESS else -1
+        }
+        val success = (res == BluetoothGatt.GATT_SUCCESS)
+        AppLogger.d(TAG, "Queued writeDescriptor for CCCD on ${descriptor.characteristic?.uuid} initiated -> $success")
+        if (!success) {
+            AppLogger.w(TAG, "writeDescriptor failed to initiate on ${descriptor.characteristic?.uuid}")
+            queue.poll()
+            processNextDescriptorWrite(gatt)
+        }
+    }
+
     /**
      * Disconnects and closes active GATT connection for the specified [sensorType].
      */
@@ -281,6 +330,7 @@ class BleManager(private val context: Context) {
         val gatt = activeGatts.remove(sensorType)
         activeSlots.remove(sensorType)
         if (gatt != null) {
+            pendingDescriptorWrites.remove(gatt)
             try {
                 gatt.disconnect()
                 gatt.close()
@@ -365,44 +415,19 @@ class BleManager(private val context: Context) {
 
                 if (sensorType == SensorType.RADAR) {
                     for (service in gatt.services) {
+                        if (isGenericService(service.uuid)) continue
                         for (c in service.characteristics) {
                             if (isNotifyOrIndicate(c)) {
                                 val setOk = gatt.setCharacteristicNotification(c, true)
                                 AppLogger.d(TAG, "Radar setCharacteristicNotification on ${c.uuid} -> $setOk")
+                                queueCccdWrite(gatt, c)
                             }
                         }
                     }
                 } else {
                     val enabled = gatt.setCharacteristicNotification(characteristic, true)
                     AppLogger.d(TAG, "setCharacteristicNotification on ${characteristic.uuid} -> $enabled")
-                }
-
-                val descriptor = characteristic.getDescriptor(BleConstants.CCCD_UUID)
-                if (descriptor != null) {
-                    val props = characteristic.properties
-                    val value = if ((props and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0 &&
-                        (props and BluetoothGattCharacteristic.PROPERTY_NOTIFY) == 0
-                    ) {
-                        BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-                    } else {
-                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    }
-
-                    @Suppress("DEPRECATION")
-                    descriptor.value = value
-                    val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        gatt.writeDescriptor(descriptor, value)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        if (gatt.writeDescriptor(descriptor)) BluetoothGatt.GATT_SUCCESS else -1
-                    }
-                    val success = (res == BluetoothGatt.GATT_SUCCESS)
-                    AppLogger.d(TAG, "writeDescriptor for CCCD on ${characteristic.uuid} returned: $success")
-                    if (!success) {
-                        AppLogger.w(TAG, "writeDescriptor for CCCD on ${characteristic.uuid} failed")
-                    }
-                } else {
-                    AppLogger.w(TAG, "CCCD descriptor (0x2902) not found for characteristic ${characteristic.uuid}")
+                    queueCccdWrite(gatt, characteristic)
                 }
 
                 updateConnectionState(sensorType, ConnectionState.CONNECTED)
@@ -414,6 +439,11 @@ class BleManager(private val context: Context) {
                     AppLogger.d(TAG, "onDescriptorWrite SUCCESS for char ${descriptor.characteristic?.uuid}")
                 } else {
                     AppLogger.e(TAG, "onDescriptorWrite FAILED with status $status for char ${descriptor.characteristic?.uuid}")
+                }
+                val queue = pendingDescriptorWrites[gatt]
+                if (queue != null && queue.isNotEmpty()) {
+                    queue.poll()
+                    processNextDescriptorWrite(gatt)
                 }
             }
 

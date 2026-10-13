@@ -117,26 +117,26 @@ class RadarParser {
                     offset += 3
 
                     val (threatLevel, distanceMeters, speedKmH, idVal) = when {
-                        // b1 is threat level (0..2) and b2 is distance (> 2 or b0 in 1..10): [ID, Threat, Dist]
-                        b1 in 0..2 && (b2 > 2 || b0 in 1..10) -> {
+                        // Pattern 1: [Target ID, Distance, Threat Level] where b2 is threat level (0..2)
+                        b2 in 0..2 && b1 > 0 -> {
+                            val t = decodeThreatLevel(b2)
+                            val d = b1.toFloat().coerceIn(0f, 150f)
+                            val id = if (b0 in 1..15) b0 else targetId++
+                            Quad(t, d, 0f, id)
+                        }
+                        // Pattern 2: [Target ID, Threat Level, Distance] where b1 is threat level (0..2)
+                        b1 in 0..2 && b2 > 0 -> {
                             val t = decodeThreatLevel(b1)
                             val d = b2.toFloat().coerceIn(0f, 150f)
                             val id = if (b0 in 1..15) b0 else targetId++
                             Quad(t, d, 0f, id)
                         }
-                        // b0 is threat level (0..2) and b1 is distance: [Threat, Dist, Speed]
-                        b0 in 0..2 && b1 > 2 -> {
+                        // Pattern 3: [Threat Level, Distance, Speed] where b0 is threat level (1..2)
+                        b0 in 1..2 -> {
                             val t = decodeThreatLevel(b0)
                             val d = b1.toFloat().coerceIn(0f, 150f)
                             val s = (b2 * 3.6f).coerceIn(0f, 200f)
                             Quad(t, d, s, targetId++)
-                        }
-                        // b2 is threat level (0..2) and b1 is distance: [ID, Dist, Threat]
-                        b2 in 0..2 && b1 > 2 -> {
-                            val t = decodeThreatLevel(b2)
-                            val d = b1.toFloat().coerceIn(0f, 150f)
-                            val id = if (b0 in 1..15) b0 else targetId++
-                            Quad(t, d, 0f, id)
                         }
                         // Fallback: search for threat level byte among b0, b1, b2
                         else -> {
@@ -206,8 +206,7 @@ class RadarParser {
         val lowerNibble = rawByte and 0x07
         if (lowerNibble in 1..2) return ThreatLevel.fromValue(lowerNibble)
 
-        // Fallback for non-zero threat flags
-        return ThreatLevel.APPROACHING
+        return ThreatLevel.NONE
     }
 
     companion object {

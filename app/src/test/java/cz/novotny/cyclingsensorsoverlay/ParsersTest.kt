@@ -146,6 +146,12 @@ class ParsersTest {
         val resVendor = parser.parse(vendorClear)
         assertNotNull(resVendor)
         assertTrue(resVendor!!.threats.isEmpty())
+
+        // 3-byte payload with Threat Level = 0 (NONE/Clear) at 38 meters
+        val clear38mPayload = byteArrayOf(0x01.toByte(), 38.toByte(), 0x00.toByte())
+        val res38mClear = parser.parse(clear38mPayload)
+        assertNotNull(res38mClear)
+        assertTrue("Threat level 0 at 38m must be cleared (0 active threats)", res38mClear!!.threats.isEmpty())
     }
 
     @Test

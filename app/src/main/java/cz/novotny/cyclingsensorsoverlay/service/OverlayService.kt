@@ -24,12 +24,15 @@ import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import cz.novotny.cyclingsensorsoverlay.MainActivity
+import cz.novotny.cyclingsensorsoverlay.data.location.GpsLocationManager
 import cz.novotny.cyclingsensorsoverlay.domain.model.CombinedSensorState
 import cz.novotny.cyclingsensorsoverlay.domain.usecase.ObserveSensorDataUseCase
 import cz.novotny.cyclingsensorsoverlay.ui.overlay.OverlayWidget
 import cz.novotny.cyclingsensorsoverlay.ui.overlay.RadarSideBarWidget
 import cz.novotny.cyclingsensorsoverlay.ui.theme.CyclingSensorsOverlayTheme
+import cz.novotny.cyclingsensorsoverlay.util.AppLogger
 import cz.novotny.cyclingsensorsoverlay.util.OverlayLifecycleOwner
+import cz.novotny.cyclingsensorsoverlay.util.PermissionUtils
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import kotlinx.coroutines.CoroutineScope
@@ -47,7 +50,7 @@ import kotlinx.coroutines.launch
  * Renders real-time cycling telemetry widgets and vertical radar threat sidebars on top of other applications.
  *
  * Key Capabilities:
- * - Foreground Service Lifecycle: Runs with ongoing notification channel and `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` on Android 14+.
+ * - Foreground Service Lifecycle: Runs with ongoing notification channel and `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` | `FOREGROUND_SERVICE_TYPE_LOCATION` on Android 14+.
  * - Custom Lifecycle Scope: Manages an [OverlayLifecycleOwner] attached to root `ComposeView`s for lifecycle and SavedState handling outside standard Activity contexts.
  * - WindowManager Layout Setup: Configures non-focusable floating window parameters (`FLAG_NOT_FOCUSABLE` | `FLAG_LAYOUT_IN_SCREEN`), persisting user drag positions to `SharedPreferences`.
  * - Dual Jetpack Compose Overlays: Renders [OverlayWidget] (power, 3s power average, HR, cadence) and [RadarSideBarWidget] (rear radar vehicle approach sidebar) concurrently.
@@ -82,6 +85,7 @@ class OverlayService : Service(), KoinComponent {
     }
 
     private val observeSensorDataUseCase: ObserveSensorDataUseCase by inject()
+    private val gpsLocationManager: GpsLocationManager by inject()
 
     private lateinit var windowManager: WindowManager
     private var telemetryComposeView: ComposeView? = null
@@ -99,10 +103,15 @@ class OverlayService : Service(), KoinComponent {
     override fun onCreate() {
         super.onCreate()
         _isRunning.value = true
+        AppLogger.logEvent("overlay_service_started")
 
         overlayLifecycleOwner.onCreate()
         overlayLifecycleOwner.onStart()
         overlayLifecycleOwner.onResume()
+
+        if (PermissionUtils.hasLocationPermission(this)) {
+            gpsLocationManager.startLocationUpdates()
+        }
 
         serviceScope.launch {
             observeSensorDataUseCase().collect { state ->
@@ -138,7 +147,7 @@ class OverlayService : Service(), KoinComponent {
             .build()
 
         val foregroundType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         } else {
             0
         }
@@ -151,11 +160,11 @@ class OverlayService : Service(), KoinComponent {
                 foregroundType
             )
         } catch (e: SecurityException) {
-            android.util.Log.e("OverlayService", "SecurityException starting foreground service", e)
+            AppLogger.e("OverlayService", "SecurityException starting foreground service", e)
             _isRunning.value = false
             stopSelf()
         } catch (e: Exception) {
-            android.util.Log.e("OverlayService", "Exception starting foreground service", e)
+            AppLogger.e("OverlayService", "Exception starting foreground service", e)
             _isRunning.value = false
             stopSelf()
         }
@@ -306,6 +315,9 @@ class OverlayService : Service(), KoinComponent {
     override fun onDestroy() {
         super.onDestroy()
         _isRunning.value = false
+        AppLogger.logEvent("overlay_service_stopped")
+
+        gpsLocationManager.stopLocationUpdates()
 
         telemetryComposeView?.let {
             try {

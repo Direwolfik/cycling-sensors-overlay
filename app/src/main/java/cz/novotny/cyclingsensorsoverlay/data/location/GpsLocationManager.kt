@@ -42,6 +42,7 @@ class GpsLocationManager(private val context: Context) {
         }
 
         AppLogger.i(TAG, "Starting GPS location speed tracking")
+        AppLogger.logEvent("gps_tracking_started")
 
         val locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
@@ -100,6 +101,7 @@ class GpsLocationManager(private val context: Context) {
     fun stopLocationUpdates() {
         if (!isTracking) return
         AppLogger.i(TAG, "Stopping GPS location tracking")
+        AppLogger.logEvent("gps_tracking_stopped")
         locationCallback?.let {
             try {
                 fusedLocationClient.removeLocationUpdates(it)

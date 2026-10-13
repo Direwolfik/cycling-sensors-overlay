@@ -64,11 +64,8 @@ object AppLogger {
      * @param throwable Optional exception associated with the failure.
      */
     fun e(tag: String, message: String, throwable: Throwable? = null) {
-        if (throwable != null) {
-            Timber.tag(tag).e(throwable, message)
-        } else {
-            Timber.tag(tag).e(message)
-        }
+        val nonFatal = throwable ?: Exception("[$tag] $message")
+        Timber.tag(tag).e(nonFatal, message)
         setCustomKey("last_error", "[$tag] $message")
     }
 
