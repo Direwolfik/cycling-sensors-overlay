@@ -270,7 +270,13 @@ class BleManager(private val context: Context) {
         }
     }
 
-    private val pendingDescriptorWrites = ConcurrentHashMap<BluetoothGatt, Queue<Pair<BluetoothGattDescriptor, ByteArray>>>()
+    private sealed class GattWriteOp {
+        data class WriteDescriptor(val descriptor: BluetoothGattDescriptor, val value: ByteArray) : GattWriteOp()
+        data class WriteCharacteristic(val characteristic: BluetoothGattCharacteristic, val value: ByteArray) : GattWriteOp()
+    }
+
+    private val pendingGattWrites = ConcurrentHashMap<BluetoothGatt, Queue<GattWriteOp>>()
+    private var hasLoggedFirstRadarPacket = false
 
     private fun queueCccdWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
         val descriptor = characteristic.getDescriptor(BleConstants.CCCD_UUID) ?: run {
@@ -286,34 +292,77 @@ class BleManager(private val context: Context) {
             BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
         }
 
-        val queue = pendingDescriptorWrites.getOrPut(gatt) { ConcurrentLinkedQueue() }
-        queue.add(descriptor to value)
+        queueGattWrite(gatt, GattWriteOp.WriteDescriptor(descriptor, value))
+    }
+
+    private fun queueCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+        queueGattWrite(gatt, GattWriteOp.WriteCharacteristic(characteristic, value))
+    }
+
+    private fun queueGattWrite(gatt: BluetoothGatt, op: GattWriteOp) {
+        val queue = pendingGattWrites.getOrPut(gatt) { ConcurrentLinkedQueue() }
+        queue.add(op)
         if (queue.size == 1) {
-            processNextDescriptorWrite(gatt)
+            processNextGattWrite(gatt)
         }
     }
 
-    private fun processNextDescriptorWrite(gatt: BluetoothGatt) {
-        val queue = pendingDescriptorWrites[gatt] ?: return
+    private fun processNextGattWrite(gatt: BluetoothGatt) {
+        val queue = pendingGattWrites[gatt] ?: return
         val next = queue.peek() ?: run {
-            pendingDescriptorWrites.remove(gatt)
+            pendingGattWrites.remove(gatt)
             return
         }
-        val (descriptor, value) = next
-        @Suppress("DEPRECATION")
-        descriptor.value = value
-        val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(descriptor, value)
-        } else {
-            @Suppress("DEPRECATION")
-            if (gatt.writeDescriptor(descriptor)) BluetoothGatt.GATT_SUCCESS else -1
-        }
-        val success = (res == BluetoothGatt.GATT_SUCCESS)
-        AppLogger.d(TAG, "Queued writeDescriptor for CCCD on ${descriptor.characteristic?.uuid} initiated -> $success")
-        if (!success) {
-            AppLogger.w(TAG, "writeDescriptor failed to initiate on ${descriptor.characteristic?.uuid}")
-            queue.poll()
-            processNextDescriptorWrite(gatt)
+
+        when (next) {
+            is GattWriteOp.WriteDescriptor -> {
+                val descriptor = next.descriptor
+                val value = next.value
+                @Suppress("DEPRECATION")
+                descriptor.value = value
+                val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeDescriptor(descriptor, value)
+                } else {
+                    @Suppress("DEPRECATION")
+                    if (gatt.writeDescriptor(descriptor)) BluetoothGatt.GATT_SUCCESS else -1
+                }
+                val success = (res == BluetoothGatt.GATT_SUCCESS)
+                AppLogger.d(TAG, "Queued writeDescriptor for CCCD on ${descriptor.characteristic?.uuid} initiated -> $success")
+                AppLogger.logEvent("ble_descriptor_write_attempt") {
+                    putString("char_uuid", descriptor.characteristic?.uuid.toString())
+                    putBoolean("success", success)
+                }
+                if (!success) {
+                    AppLogger.w(TAG, "writeDescriptor failed to initiate on ${descriptor.characteristic?.uuid}")
+                    queue.poll()
+                    processNextGattWrite(gatt)
+                }
+            }
+            is GattWriteOp.WriteCharacteristic -> {
+                val characteristic = next.characteristic
+                val value = next.value
+                val hex = value.joinToString(" ") { "%02X".format(it) }
+                val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeCharacteristic(characteristic, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+                } else {
+                    @Suppress("DEPRECATION")
+                    characteristic.value = value
+                    @Suppress("DEPRECATION")
+                    if (gatt.writeCharacteristic(characteristic)) BluetoothGatt.GATT_SUCCESS else -1
+                }
+                val success = (res == BluetoothGatt.GATT_SUCCESS)
+                AppLogger.d(TAG, "Queued writeCharacteristic on ${characteristic.uuid} [$hex] initiated -> $success")
+                AppLogger.logEvent("radar_activation_sent") {
+                    putString("char_uuid", characteristic.uuid.toString())
+                    putString("hex_payload", hex)
+                    putBoolean("success", success)
+                }
+                if (!success) {
+                    AppLogger.w(TAG, "writeCharacteristic failed to initiate on ${characteristic.uuid}")
+                    queue.poll()
+                    processNextGattWrite(gatt)
+                }
+            }
         }
     }
 
@@ -326,11 +375,12 @@ class BleManager(private val context: Context) {
             radarWatchdogJob?.cancel()
             radarWatchdogJob = null
             radarDataStream.value = null
+            hasLoggedFirstRadarPacket = false
         }
         val gatt = activeGatts.remove(sensorType)
         activeSlots.remove(sensorType)
         if (gatt != null) {
-            pendingDescriptorWrites.remove(gatt)
+            pendingGattWrites.remove(gatt)
             try {
                 gatt.disconnect()
                 gatt.close()
@@ -393,12 +443,9 @@ class BleManager(private val context: Context) {
                 val discoveredUuids = gatt.services.map { it.uuid.toString() }
                 AppLogger.i(TAG, "Discovered ${gatt.services.size} services for $sensorType: $discoveredUuids")
                 AppLogger.setCustomKey("${sensorType.name.lowercase()}_services", discoveredUuids.joinToString(","))
-
-                for (service in gatt.services) {
-                    AppLogger.d(TAG, "  Service UUID: ${service.uuid}")
-                    for (char in service.characteristics) {
-                        AppLogger.d(TAG, "    Char UUID: ${char.uuid}, props: 0x${char.properties.toString(16)}")
-                    }
+                AppLogger.logEvent("ble_services_discovered") {
+                    putString("sensor_type", sensorType.name)
+                    putString("services", discoveredUuids.joinToString(","))
                 }
 
                 val characteristic = findCharacteristicForSensor(gatt, sensorType)
@@ -414,16 +461,32 @@ class BleManager(private val context: Context) {
                 AppLogger.setCustomKey("${sensorType.name.lowercase()}_char_found", true)
 
                 if (sensorType == SensorType.RADAR) {
+                    val notifyChars = mutableListOf<String>()
+                    val writeChars = mutableListOf<String>()
+
                     for (service in gatt.services) {
                         if (isGenericService(service.uuid)) continue
                         for (c in service.characteristics) {
                             if (isNotifyOrIndicate(c)) {
                                 val setOk = gatt.setCharacteristicNotification(c, true)
                                 AppLogger.d(TAG, "Radar setCharacteristicNotification on ${c.uuid} -> $setOk")
+                                notifyChars.add(c.uuid.toString())
                                 queueCccdWrite(gatt, c)
+                            }
+                            if (isWritable(c)) {
+                                writeChars.add(c.uuid.toString())
+                                queueCharacteristicWrite(gatt, c, byteArrayOf(0x01, 0x01))
+                                queueCharacteristicWrite(gatt, c, byteArrayOf(0x00))
                             }
                         }
                     }
+
+                    AppLogger.logEvent("radar_characteristics_found") {
+                        putString("notify_chars", notifyChars.joinToString(","))
+                        putString("write_chars", writeChars.joinToString(","))
+                    }
+                    AppLogger.setCustomKey("radar_notify_chars", notifyChars.joinToString(","))
+                    AppLogger.setCustomKey("radar_write_chars", writeChars.joinToString(","))
                 } else {
                     val enabled = gatt.setCharacteristicNotification(characteristic, true)
                     AppLogger.d(TAG, "setCharacteristicNotification on ${characteristic.uuid} -> $enabled")
@@ -435,15 +498,31 @@ class BleManager(private val context: Context) {
 
             override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
                 val success = (status == BluetoothGatt.GATT_SUCCESS)
-                if (success) {
-                    AppLogger.d(TAG, "onDescriptorWrite SUCCESS for char ${descriptor.characteristic?.uuid}")
-                } else {
-                    AppLogger.e(TAG, "onDescriptorWrite FAILED with status $status for char ${descriptor.characteristic?.uuid}")
+                AppLogger.d(TAG, "onDescriptorWrite SUCCESS=$success (status=$status) for char ${descriptor.characteristic?.uuid}")
+                AppLogger.logEvent("radar_cccd_write_result") {
+                    putString("char_uuid", descriptor.characteristic?.uuid.toString())
+                    putInt("status", status)
+                    putBoolean("success", success)
                 }
-                val queue = pendingDescriptorWrites[gatt]
+                val queue = pendingGattWrites[gatt]
                 if (queue != null && queue.isNotEmpty()) {
                     queue.poll()
-                    processNextDescriptorWrite(gatt)
+                    processNextGattWrite(gatt)
+                }
+            }
+
+            override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+                val success = (status == BluetoothGatt.GATT_SUCCESS)
+                AppLogger.d(TAG, "onCharacteristicWrite SUCCESS=$success (status=$status) for char ${characteristic.uuid}")
+                AppLogger.logEvent("radar_char_write_result") {
+                    putString("char_uuid", characteristic.uuid.toString())
+                    putInt("status", status)
+                    putBoolean("success", success)
+                }
+                val queue = pendingGattWrites[gatt]
+                if (queue != null && queue.isNotEmpty()) {
+                    queue.poll()
+                    processNextGattWrite(gatt)
                 }
             }
 
@@ -451,8 +530,10 @@ class BleManager(private val context: Context) {
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 @Suppress("DEPRECATION")
                 val value = characteristic.value ?: return
-                val hexString = value.joinToString(" ") { "%02X".format(it) }
-                AppLogger.d(TAG, "onCharacteristicChanged (legacy) [$sensorType] [Char ${characteristic.uuid}]: $hexString")
+                if (sensorType == SensorType.RADAR) {
+                    val hexString = value.joinToString(" ") { "%02X".format(it) }
+                    AppLogger.d(TAG, "onCharacteristicChanged (legacy) [RADAR] [Char ${characteristic.uuid}]: $hexString")
+                }
                 handleDataChanged(sensorType, value)
             }
 
@@ -461,8 +542,10 @@ class BleManager(private val context: Context) {
                 characteristic: BluetoothGattCharacteristic,
                 value: ByteArray
             ) {
-                val hexString = value.joinToString(" ") { "%02X".format(it) }
-                AppLogger.d(TAG, "onCharacteristicChanged [$sensorType] [Char ${characteristic.uuid}]: $hexString")
+                if (sensorType == SensorType.RADAR) {
+                    val hexString = value.joinToString(" ") { "%02X".format(it) }
+                    AppLogger.d(TAG, "onCharacteristicChanged [RADAR] [Char ${characteristic.uuid}]: $hexString")
+                }
                 handleDataChanged(sensorType, value)
             }
         }
@@ -585,6 +668,12 @@ class BleManager(private val context: Context) {
                (props and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0)
     }
 
+    private fun isWritable(char: BluetoothGattCharacteristic): Boolean {
+        val props = char.properties
+        return (props and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) ||
+               (props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
+    }
+
     private fun isGenericService(serviceUuid: UUID): Boolean {
         val s = serviceUuid.toString().lowercase(Locale.ROOT)
         return s.startsWith("00001800") || s.startsWith("00001801")
@@ -630,6 +719,15 @@ class BleManager(private val context: Context) {
                 }
             }
             SensorType.RADAR -> {
+                if (!hasLoggedFirstRadarPacket) {
+                    hasLoggedFirstRadarPacket = true
+                    val hexString = data.joinToString(" ") { "%02X".format(it) }
+                    AppLogger.i(TAG, "First Radar packet received! Hex: [$hexString]")
+                    AppLogger.logEvent("radar_first_packet_received") {
+                        putString("hex_payload", hexString)
+                        putInt("length", data.size)
+                    }
+                }
                 resetRadarWatchdog()
                 radarParser.parse(data)?.let { parsed ->
                     radarDataStream.value = parsed

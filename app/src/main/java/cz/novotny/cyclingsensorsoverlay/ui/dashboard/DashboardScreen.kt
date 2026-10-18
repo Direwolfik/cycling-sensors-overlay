@@ -10,7 +10,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsBike
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
+import cz.novotny.cyclingsensorsoverlay.util.AppLogger
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FlashOn
@@ -249,6 +251,100 @@ fun DashboardContent(
             isRadarSimulated = isRadarSimulated,
             onToggleRadarSimulation = onToggleRadarSimulation
         )
+
+        // Manual Debug Session Snapshot Card
+        SendDebugLogsCard(sensorState = sensorState)
+    }
+}
+
+@Composable
+private fun SendDebugLogsCard(
+    sensorState: CombinedSensorState
+) {
+    val context = LocalContext.current
+    var showConfirmDialog by remember { mutableStateOf(false) }
+
+    if (showConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfirmDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.BugReport,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = {
+                Text(text = "Send Debug Logs?")
+            },
+            text = {
+                Text(text = "This will capture a live snapshot of BLE sensor telemetry, connection states, and radar log buffer, uploading it directly to Firebase Crashlytics.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showConfirmDialog = false
+                        val summary = "GpsSpeed: ${sensorState.gpsSpeedKmh ?: "N/A"} km/h, Connections: ${sensorState.connectionStates}, RadarTargets: ${sensorState.radarData?.threats?.size ?: 0}"
+                        AppLogger.sendManualDebugSnapshot(context, summary)
+                    }
+                ) {
+                    Text("Send Logs Now")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showConfirmDialog = false }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Debug Session Snapshot",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Upload live BLE & Radar telemetry logs directly to Firebase Crashlytics",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(
+                onClick = {
+                    showConfirmDialog = true
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.BugReport,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Send Logs")
+            }
+        }
     }
 }
 

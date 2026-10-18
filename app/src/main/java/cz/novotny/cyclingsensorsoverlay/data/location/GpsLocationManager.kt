@@ -92,7 +92,6 @@ class GpsLocationManager(private val context: Context) {
 
         lastLocation = location
         _gpsSpeedStream.value = speedKmh
-        AppLogger.d(TAG, "GPS Location speed update: $speedKmh km/h")
     }
 
     /**

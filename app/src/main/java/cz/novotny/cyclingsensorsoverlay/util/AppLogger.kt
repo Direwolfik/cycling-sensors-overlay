@@ -105,6 +105,35 @@ object AppLogger {
             analytics?.logEvent(eventName, bundle)
         }
     }
+
+    /**
+     * Manually triggers a Crashlytics non-fatal exception snapshot containing current session keys
+     * and log history, giving immediate visibility in Firebase Console.
+     */
+    fun sendManualDebugSnapshot(context: Context, extraInfo: String = "") {
+        val timestamp = System.currentTimeMillis()
+        setCustomKey("manual_debug_trigger_time", timestamp.toString())
+        if (extraInfo.isNotBlank()) {
+            setCustomKey("manual_debug_info", extraInfo)
+        }
+
+        val nonFatal = Exception("[ManualUserDebug] Ride debug snapshot uploaded at $timestamp. Details: $extraInfo")
+        Timber.tag("ManualUserDebug").e(nonFatal, "User pressed 'Send Debug Logs' button during ride")
+        setCustomKey("last_error", "[ManualUserDebug] User triggered manual debug snapshot")
+
+        logEvent("user_triggered_debug_snapshot") {
+            putString("extra_info", extraInfo)
+            putLong("timestamp", timestamp)
+        }
+
+        runCatching {
+            android.widget.Toast.makeText(
+                context,
+                "Debug logs snapshot uploaded to Firebase Crashlytics!",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 }
 
 /**
