@@ -5,110 +5,55 @@ import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
 import android.os.Build
-import cz.novotny.cyclingsensorsoverlay.data.ble.parser.CyclingPowerParser
-import cz.novotny.cyclingsensorsoverlay.data.ble.parser.HeartRateParser
-import cz.novotny.cyclingsensorsoverlay.data.ble.parser.RadarParser
+import cz.novotny.cyclingsensorsoverlay.data.ble.handler.*
 import cz.novotny.cyclingsensorsoverlay.domain.model.*
 import cz.novotny.cyclingsensorsoverlay.util.AppLogger
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.Queue
 
 /**
  * Low-level Bluetooth Low Energy (BLE) manager handling multi-slot sensor connections, device discovery scanning,
- * GATT callbacks, automatic reconnection, universal service lookup fallback, and telemetry Flow emissions.
- * Fully instrumented with Firebase logging, custom session state keys, and non-fatal error recording for detailed
- * BLE and Radar stack debugging.
+ * GATT callbacks, write queues, automatic reconnection, and telemetry Flow emissions.
+ *
+ * Specific sensor parsing, setup sequences, and simulation logic are delegated to [SensorHandler] implementations.
  */
 @SuppressLint("MissingPermission")
-class BleManager(private val context: Context) {
+class BleManager(
+    private val context: Context,
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+    private val powerHandler: PowerSensorHandler = PowerSensorHandler(),
+    private val heartRateHandler: HeartRateSensorHandler = HeartRateSensorHandler(),
+    private val radarHandler: RadarSensorHandler = RadarSensorHandler(scope)
+) {
 
     private val bluetoothManager: BluetoothManager? =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager?.adapter
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-    private val powerParser = CyclingPowerParser()
-    private val heartRateParser = HeartRateParser()
-    private val radarParser = RadarParser()
+    private val handlers: Map<SensorType, SensorHandler<*>> = mapOf(
+        SensorType.POWER to powerHandler,
+        SensorType.HEART_RATE to heartRateHandler,
+        SensorType.RADAR to radarHandler
+    )
 
     /** Hot stream emitting parsed cycling power and cadence telemetry data. */
-    val powerDataStream = MutableStateFlow<PowerData?>(null)
+    val powerDataStream: StateFlow<PowerData?> get() = powerHandler.dataStream
 
     /** Hot stream emitting parsed heart rate telemetry data. */
-    val heartRateDataStream = MutableStateFlow<HeartRateData?>(null)
+    val heartRateDataStream: StateFlow<HeartRateData?> get() = heartRateHandler.dataStream
 
     /** Hot stream emitting parsed rear radar vehicle threat telemetry data. */
-    val radarDataStream = MutableStateFlow<RadarData?>(null)
-
-    private val _isRadarSimulated = MutableStateFlow(false)
+    val radarDataStream: StateFlow<RadarData?> get() = radarHandler.dataStream
 
     /** State flow indicating whether simulated radar threat generation is active. */
-    val isRadarSimulated: StateFlow<Boolean> = _isRadarSimulated.asStateFlow()
+    val isRadarSimulated: StateFlow<Boolean> get() = radarHandler.isRadarSimulated
 
-    private var simulationJob: Job? = null
-    private var radarWatchdogTimeoutCount = 0
-
-    /**
-     * Enables or disables synthetic rear radar threat simulation.
-     */
+    /** Enables or disables synthetic rear radar threat simulation. */
     fun setRadarSimulationEnabled(enabled: Boolean) {
-        _isRadarSimulated.value = enabled
-        AppLogger.i(TAG, "Radar simulation enabled set to: $enabled")
-        AppLogger.setCustomKey("radar_simulation_enabled", enabled)
-
-        simulationJob?.cancel()
-        if (enabled) {
-            simulationJob = scope.launch {
-                var v1Dist = 145f
-                var v2Dist = 95f
-                val v1Speed = 72f
-                val v2Speed = 42f
-
-                while (isActive) {
-                    delay(150L)
-
-                    v1Dist -= (v1Speed / 3.6f) * 0.15f
-                    if (v1Dist <= 0f) v1Dist = 150f
-
-                    v2Dist -= (v2Speed / 3.6f) * 0.15f
-                    if (v2Dist <= 0f) v2Dist = 150f
-
-                    val threats = mutableListOf<RadarThreat>()
-                    if (v1Dist in 0f..150f) {
-                        threats.add(
-                            RadarThreat(
-                                id = 1,
-                                threatLevel = ThreatLevel.HIGH_SPEED,
-                                distanceMeters = v1Dist,
-                                speedKmH = v1Speed
-                            )
-                        )
-                    }
-                    if (v2Dist in 0f..150f) {
-                        threats.add(
-                            RadarThreat(
-                                id = 2,
-                                threatLevel = ThreatLevel.APPROACHING,
-                                distanceMeters = v2Dist,
-                                speedKmH = v2Speed
-                            )
-                        )
-                    }
-
-                    radarDataStream.value = RadarData(
-                        threats = threats.sortedBy { it.distanceMeters }
-                    )
-                }
-            }
-        } else {
-            simulationJob = null
-            radarDataStream.value = null
-        }
+        radarHandler.setRadarSimulationEnabled(enabled)
     }
 
     private val _connectionStates = MutableStateFlow<Map<SensorType, ConnectionState>>(
@@ -120,7 +65,8 @@ class BleManager(private val context: Context) {
     )
 
     /** State flow tracking connection lifecycle state for each sensor slot type. */
-    val connectionStates: StateFlow<Map<SensorType, ConnectionState>> = _connectionStates.asStateFlow()
+    val connectionStates: StateFlow<Map<SensorType, ConnectionState>> =
+        _connectionStates.asStateFlow()
 
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
 
@@ -134,6 +80,31 @@ class BleManager(private val context: Context) {
     private var leScanner: BluetoothLeScanner? = null
     private var scanCallback: ScanCallback? = null
     private var isScanning = false
+
+    private val gattOperationHelper = object : GattOperationHelper {
+        override fun setNotification(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            enable: Boolean
+        ): Boolean {
+            return gatt.setCharacteristicNotification(characteristic, enable)
+        }
+
+        override fun queueCccdWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic
+        ) {
+            this@BleManager.queueCccdWrite(gatt, characteristic)
+        }
+
+        override fun queueCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            this@BleManager.queueCharacteristicWrite(gatt, characteristic, value)
+        }
+    }
 
     /**
      * Starts low-latency BLE scan for nearby cycling sensors.
@@ -170,7 +141,8 @@ class BleManager(private val context: Context) {
                     Math.round(rawRssi / 5.0f) * 5
                 }
 
-                val rawServiceUuids = result.scanRecord?.serviceUuids?.map { it.uuid.toString() } ?: emptyList()
+                val rawServiceUuids =
+                    result.scanRecord?.serviceUuids?.map { it.uuid.toString() } ?: emptyList()
 
                 val tempDiscovered = DiscoveredDevice(
                     name = name,
@@ -257,7 +229,8 @@ class BleManager(private val context: Context) {
         try {
             val device = adapter.getRemoteDevice(mac)
             val gattCallback = createGattCallback(slot.sensorType)
-            val gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            val gatt =
+                device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             if (gatt != null) {
                 activeGatts[slot.sensorType] = gatt
             } else {
@@ -271,16 +244,23 @@ class BleManager(private val context: Context) {
     }
 
     private sealed class GattWriteOp {
-        data class WriteDescriptor(val descriptor: BluetoothGattDescriptor, val value: ByteArray) : GattWriteOp()
-        data class WriteCharacteristic(val characteristic: BluetoothGattCharacteristic, val value: ByteArray) : GattWriteOp()
+        data class WriteDescriptor(val descriptor: BluetoothGattDescriptor, val value: ByteArray) :
+            GattWriteOp()
+
+        data class WriteCharacteristic(
+            val characteristic: BluetoothGattCharacteristic,
+            val value: ByteArray
+        ) : GattWriteOp()
     }
 
     private val pendingGattWrites = ConcurrentHashMap<BluetoothGatt, Queue<GattWriteOp>>()
-    private var hasLoggedFirstRadarPacket = false
 
     private fun queueCccdWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
         val descriptor = characteristic.getDescriptor(BleConstants.CCCD_UUID) ?: run {
-            AppLogger.w(TAG, "CCCD descriptor (0x2902) not found for characteristic ${characteristic.uuid}")
+            AppLogger.w(
+                TAG,
+                "CCCD descriptor (0x2902) not found for characteristic ${characteristic.uuid}"
+            )
             return
         }
         val props = characteristic.properties
@@ -295,7 +275,11 @@ class BleManager(private val context: Context) {
         queueGattWrite(gatt, GattWriteOp.WriteDescriptor(descriptor, value))
     }
 
-    private fun queueCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+    private fun queueCharacteristicWrite(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray
+    ) {
         queueGattWrite(gatt, GattWriteOp.WriteCharacteristic(characteristic, value))
     }
 
@@ -320,45 +304,52 @@ class BleManager(private val context: Context) {
                 val value = next.value
                 @Suppress("DEPRECATION")
                 descriptor.value = value
-                val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val res =
                     gatt.writeDescriptor(descriptor, value)
-                } else {
-                    @Suppress("DEPRECATION")
-                    if (gatt.writeDescriptor(descriptor)) BluetoothGatt.GATT_SUCCESS else -1
-                }
                 val success = (res == BluetoothGatt.GATT_SUCCESS)
-                AppLogger.d(TAG, "Queued writeDescriptor for CCCD on ${descriptor.characteristic?.uuid} initiated -> $success")
+                AppLogger.d(
+                    TAG,
+                    "Queued writeDescriptor for CCCD on ${descriptor.characteristic?.uuid} initiated -> $success"
+                )
                 AppLogger.logEvent("ble_descriptor_write_attempt") {
                     putString("char_uuid", descriptor.characteristic?.uuid.toString())
                     putBoolean("success", success)
                 }
                 if (!success) {
-                    AppLogger.w(TAG, "writeDescriptor failed to initiate on ${descriptor.characteristic?.uuid}")
+                    AppLogger.w(
+                        TAG,
+                        "writeDescriptor failed to initiate on ${descriptor.characteristic?.uuid}"
+                    )
                     queue.poll()
                     processNextGattWrite(gatt)
                 }
             }
+
             is GattWriteOp.WriteCharacteristic -> {
                 val characteristic = next.characteristic
                 val value = next.value
                 val hex = value.joinToString(" ") { "%02X".format(it) }
-                val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    gatt.writeCharacteristic(characteristic, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
-                } else {
-                    @Suppress("DEPRECATION")
-                    characteristic.value = value
-                    @Suppress("DEPRECATION")
-                    if (gatt.writeCharacteristic(characteristic)) BluetoothGatt.GATT_SUCCESS else -1
-                }
+                val res =
+                    gatt.writeCharacteristic(
+                        characteristic,
+                        value,
+                        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    )
                 val success = (res == BluetoothGatt.GATT_SUCCESS)
-                AppLogger.d(TAG, "Queued writeCharacteristic on ${characteristic.uuid} [$hex] initiated -> $success")
+                AppLogger.d(
+                    TAG,
+                    "Queued writeCharacteristic on ${characteristic.uuid} [$hex] initiated -> $success"
+                )
                 AppLogger.logEvent("radar_activation_sent") {
                     putString("char_uuid", characteristic.uuid.toString())
                     putString("hex_payload", hex)
                     putBoolean("success", success)
                 }
                 if (!success) {
-                    AppLogger.w(TAG, "writeCharacteristic failed to initiate on ${characteristic.uuid}")
+                    AppLogger.w(
+                        TAG,
+                        "writeCharacteristic failed to initiate on ${characteristic.uuid}"
+                    )
                     queue.poll()
                     processNextGattWrite(gatt)
                 }
@@ -371,12 +362,8 @@ class BleManager(private val context: Context) {
      */
     fun disconnectSlot(sensorType: SensorType) {
         AppLogger.i(TAG, "Disconnecting slot $sensorType")
-        if (sensorType == SensorType.RADAR) {
-            radarWatchdogJob?.cancel()
-            radarWatchdogJob = null
-            radarDataStream.value = null
-            hasLoggedFirstRadarPacket = false
-        }
+        handlers[sensorType]?.onDisconnected()
+
         val gatt = activeGatts.remove(sensorType)
         activeSlots.remove(sensorType)
         if (gatt != null) {
@@ -391,348 +378,190 @@ class BleManager(private val context: Context) {
         updateConnectionState(sensorType, ConnectionState.DISCONNECTED)
     }
 
-    private fun createGattCallback(sensorType: SensorType): BluetoothGattCallback {
-        return object : BluetoothGattCallback() {
-            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                when (newState) {
-                    BluetoothProfile.STATE_CONNECTED -> {
-                        AppLogger.i(TAG, "GATT Connected to $sensorType (status=$status). Discovering services...")
-                        AppLogger.setCustomKey("${sensorType.name.lowercase()}_connection_state", "CONNECTED")
-                        AppLogger.logEvent("ble_gatt_connected") {
-                            putString("sensor_type", sensorType.name)
-                            putInt("status", status)
-                        }
-                        updateConnectionState(sensorType, ConnectionState.CONNECTING)
-                        gatt.discoverServices()
-                    }
-                    BluetoothProfile.STATE_DISCONNECTED -> {
-                        AppLogger.w(TAG, "GATT Disconnected from $sensorType (status=$status)")
-                        AppLogger.setCustomKey("${sensorType.name.lowercase()}_connection_state", "DISCONNECTED")
-                        AppLogger.logEvent("ble_gatt_disconnected") {
-                            putString("sensor_type", sensorType.name)
-                            putInt("status", status)
-                        }
-                        gatt.close()
-                        activeGatts.remove(sensorType)
-                        updateConnectionState(sensorType, ConnectionState.DISCONNECTED)
+    private fun createGattCallback(sensorType: SensorType): BluetoothGattCallback =
+        BluetoothGattCallbackImpl(sensorType)
 
-                        val slot = activeSlots[sensorType]
-                        if (slot?.autoConnect == true) {
-                            scope.launch {
-                                delay(3000L)
-                                if (activeSlots[sensorType]?.macAddress == slot.macAddress &&
-                                    _connectionStates.value[sensorType] == ConnectionState.DISCONNECTED
-                                ) {
-                                    AppLogger.i(TAG, "Auto-reconnecting $sensorType to MAC ${slot.macAddress}")
-                                    connectSlot(slot)
-                                }
+    inner class BluetoothGattCallbackImpl(private val sensorType: SensorType) :
+        BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> {
+                    AppLogger.i(
+                        TAG,
+                        "GATT Connected to $sensorType (status=$status). Discovering services..."
+                    )
+                    AppLogger.setCustomKey(
+                        "${sensorType.name.lowercase()}_connection_state",
+                        "CONNECTED"
+                    )
+                    AppLogger.logEvent("ble_gatt_connected") {
+                        putString("sensor_type", sensorType.name)
+                        putInt("status", status)
+                    }
+                    updateConnectionState(sensorType, ConnectionState.CONNECTING)
+                    gatt.discoverServices()
+                }
+
+                BluetoothProfile.STATE_DISCONNECTED -> {
+                    AppLogger.w(TAG, "GATT Disconnected from $sensorType (status=$status)")
+                    AppLogger.setCustomKey(
+                        "${sensorType.name.lowercase()}_connection_state",
+                        "DISCONNECTED"
+                    )
+                    AppLogger.logEvent("ble_gatt_disconnected") {
+                        putString("sensor_type", sensorType.name)
+                        putInt("status", status)
+                    }
+                    gatt.close()
+                    activeGatts.remove(sensorType)
+                    handlers[sensorType]?.onDisconnected()
+                    updateConnectionState(sensorType, ConnectionState.DISCONNECTED)
+
+                    val slot = activeSlots[sensorType]
+                    if (slot?.autoConnect == true) {
+                        scope.launch {
+                            delay(3000L)
+                            if (activeSlots[sensorType]?.macAddress == slot.macAddress &&
+                                _connectionStates.value[sensorType] == ConnectionState.DISCONNECTED
+                            ) {
+                                AppLogger.i(
+                                    TAG,
+                                    "Auto-reconnecting $sensorType to MAC ${slot.macAddress}"
+                                )
+                                connectSlot(slot)
                             }
                         }
                     }
                 }
             }
+        }
 
-            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                if (status != BluetoothGatt.GATT_SUCCESS) {
-                    AppLogger.e(TAG, "Service discovery failed with status $status for $sensorType")
-                    AppLogger.setCustomKey("${sensorType.name.lowercase()}_service_discovery_status", status)
-                    updateConnectionState(sensorType, ConnectionState.ERROR)
-                    return
-                }
-
-                val discoveredUuids = gatt.services.map { it.uuid.toString() }
-                AppLogger.i(TAG, "Discovered ${gatt.services.size} services for $sensorType: $discoveredUuids")
-                AppLogger.setCustomKey("${sensorType.name.lowercase()}_services", discoveredUuids.joinToString(","))
-                AppLogger.logEvent("ble_services_discovered") {
-                    putString("sensor_type", sensorType.name)
-                    putString("services", discoveredUuids.joinToString(","))
-                }
-
-                val characteristic = findCharacteristicForSensor(gatt, sensorType)
-                if (characteristic == null) {
-                    AppLogger.e(TAG, "Required service/characteristic not found for $sensorType in GATT services")
-                    AppLogger.setCustomKey("${sensorType.name.lowercase()}_char_found", false)
-                    updateConnectionState(sensorType, ConnectionState.ERROR)
-                    return
-                }
-
-                AppLogger.i(TAG, "Selected primary characteristic ${characteristic.uuid} for $sensorType")
-                AppLogger.setCustomKey("${sensorType.name.lowercase()}_primary_char", characteristic.uuid.toString())
-                AppLogger.setCustomKey("${sensorType.name.lowercase()}_char_found", true)
-
-                if (sensorType == SensorType.RADAR) {
-                    val notifyChars = mutableListOf<String>()
-                    val writeChars = mutableListOf<String>()
-
-                    for (service in gatt.services) {
-                        if (isGenericService(service.uuid)) continue
-                        for (c in service.characteristics) {
-                            if (isNotifyOrIndicate(c)) {
-                                val setOk = gatt.setCharacteristicNotification(c, true)
-                                AppLogger.d(TAG, "Radar setCharacteristicNotification on ${c.uuid} -> $setOk")
-                                notifyChars.add(c.uuid.toString())
-                                queueCccdWrite(gatt, c)
-                            }
-                            if (isWritable(c)) {
-                                writeChars.add(c.uuid.toString())
-                                queueCharacteristicWrite(gatt, c, byteArrayOf(0x01, 0x01))
-                                queueCharacteristicWrite(gatt, c, byteArrayOf(0x00))
-                            }
-                        }
-                    }
-
-                    AppLogger.logEvent("radar_characteristics_found") {
-                        putString("notify_chars", notifyChars.joinToString(","))
-                        putString("write_chars", writeChars.joinToString(","))
-                    }
-                    AppLogger.setCustomKey("radar_notify_chars", notifyChars.joinToString(","))
-                    AppLogger.setCustomKey("radar_write_chars", writeChars.joinToString(","))
-                } else {
-                    val enabled = gatt.setCharacteristicNotification(characteristic, true)
-                    AppLogger.d(TAG, "setCharacteristicNotification on ${characteristic.uuid} -> $enabled")
-                    queueCccdWrite(gatt, characteristic)
-                }
-
-                updateConnectionState(sensorType, ConnectionState.CONNECTED)
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                AppLogger.e(TAG, "Service discovery failed with status $status for $sensorType")
+                AppLogger.setCustomKey(
+                    "${sensorType.name.lowercase()}_service_discovery_status",
+                    status
+                )
+                updateConnectionState(sensorType, ConnectionState.ERROR)
+                return
             }
 
-            override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-                val success = (status == BluetoothGatt.GATT_SUCCESS)
-                AppLogger.d(TAG, "onDescriptorWrite SUCCESS=$success (status=$status) for char ${descriptor.characteristic?.uuid}")
-                AppLogger.logEvent("radar_cccd_write_result") {
-                    putString("char_uuid", descriptor.characteristic?.uuid.toString())
-                    putInt("status", status)
-                    putBoolean("success", success)
-                }
-                val queue = pendingGattWrites[gatt]
-                if (queue != null && queue.isNotEmpty()) {
-                    queue.poll()
-                    processNextGattWrite(gatt)
-                }
+            val discoveredUuids = gatt.services.map { it.uuid.toString() }
+            AppLogger.i(
+                TAG,
+                "Discovered ${gatt.services.size} services for $sensorType: $discoveredUuids"
+            )
+            AppLogger.setCustomKey(
+                "${sensorType.name.lowercase()}_services",
+                discoveredUuids.joinToString(",")
+            )
+            AppLogger.logEvent("ble_services_discovered") {
+                putString("sensor_type", sensorType.name)
+                putString("services", discoveredUuids.joinToString(","))
             }
 
-            override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-                val success = (status == BluetoothGatt.GATT_SUCCESS)
-                AppLogger.d(TAG, "onCharacteristicWrite SUCCESS=$success (status=$status) for char ${characteristic.uuid}")
-                AppLogger.logEvent("radar_char_write_result") {
-                    putString("char_uuid", characteristic.uuid.toString())
-                    putInt("status", status)
-                    putBoolean("success", success)
-                }
-                val queue = pendingGattWrites[gatt]
-                if (queue != null && queue.isNotEmpty()) {
-                    queue.poll()
-                    processNextGattWrite(gatt)
-                }
+            val handler = handlers[sensorType]
+            val characteristic = handler?.findCharacteristic(gatt.services)
+            if (characteristic == null) {
+                AppLogger.e(
+                    TAG,
+                    "Required service/characteristic not found for $sensorType in GATT services"
+                )
+                AppLogger.setCustomKey("${sensorType.name.lowercase()}_char_found", false)
+                updateConnectionState(sensorType, ConnectionState.ERROR)
+                return
             }
 
-            @Deprecated("Deprecated in Java")
-            override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-                @Suppress("DEPRECATION")
-                val value = characteristic.value ?: return
-                if (sensorType == SensorType.RADAR) {
-                    val hexString = value.joinToString(" ") { "%02X".format(it) }
-                    AppLogger.d(TAG, "onCharacteristicChanged (legacy) [RADAR] [Char ${characteristic.uuid}]: $hexString")
-                }
-                handleDataChanged(sensorType, value)
+            AppLogger.i(
+                TAG,
+                "Selected primary characteristic ${characteristic.uuid} for $sensorType"
+            )
+            AppLogger.setCustomKey(
+                "${sensorType.name.lowercase()}_primary_char",
+                characteristic.uuid.toString()
+            )
+            AppLogger.setCustomKey("${sensorType.name.lowercase()}_char_found", true)
+
+            handler.setupGatt(gatt, characteristic, gattOperationHelper)
+
+            updateConnectionState(sensorType, ConnectionState.CONNECTED)
+        }
+
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            val success = (status == BluetoothGatt.GATT_SUCCESS)
+            AppLogger.d(
+                TAG,
+                "onDescriptorWrite SUCCESS=$success (status=$status) for char ${descriptor.characteristic?.uuid}"
+            )
+            AppLogger.logEvent("radar_cccd_write_result") {
+                putString("char_uuid", descriptor.characteristic?.uuid.toString())
+                putInt("status", status)
+                putBoolean("success", success)
             }
-
-            override fun onCharacteristicChanged(
-                gatt: BluetoothGatt,
-                characteristic: BluetoothGattCharacteristic,
-                value: ByteArray
-            ) {
-                if (sensorType == SensorType.RADAR) {
-                    val hexString = value.joinToString(" ") { "%02X".format(it) }
-                    AppLogger.d(TAG, "onCharacteristicChanged [RADAR] [Char ${characteristic.uuid}]: $hexString")
-                }
-                handleDataChanged(sensorType, value)
+            val queue = pendingGattWrites[gatt]
+            if (!queue.isNullOrEmpty()) {
+                queue.poll()
+                processNextGattWrite(gatt)
             }
         }
-    }
 
-    private fun findCharacteristicForSensor(
-        gatt: BluetoothGatt,
-        sensorType: SensorType
-    ): BluetoothGattCharacteristic? {
-        val services = gatt.services ?: return null
-
-        return when (sensorType) {
-            SensorType.RADAR -> findRadarCharacteristic(services)
-            SensorType.POWER -> findPowerCharacteristic(services)
-            SensorType.HEART_RATE -> findHeartRateCharacteristic(services)
-        }
-    }
-
-    private fun findRadarCharacteristic(services: List<BluetoothGattService>): BluetoothGattCharacteristic? {
-        val standardService = services.firstOrNull { uuidMatches(it.uuid, "183c") }
-        if (standardService != null) {
-            val char = standardService.characteristics.firstOrNull { uuidMatches(it.uuid, "2b18") }
-            if (char != null && isNotifyOrIndicate(char)) return char
-            val fallbackChar = standardService.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (fallbackChar != null) return fallbackChar
-        }
-
-        val variaService = services.firstOrNull { uuidMatches(it.uuid, "6e400001") }
-        if (variaService != null) {
-            val char = variaService.characteristics.firstOrNull {
-                (uuidMatches(it.uuid, "6e400003") || uuidMatches(it.uuid, "6e400002") || uuidMatches(it.uuid, "2b18")) &&
-                        isNotifyOrIndicate(it)
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            val success = (status == BluetoothGatt.GATT_SUCCESS)
+            AppLogger.d(
+                TAG,
+                "onCharacteristicWrite SUCCESS=$success (status=$status) for char ${characteristic.uuid}"
+            )
+            AppLogger.logEvent("radar_char_write_result") {
+                putString("char_uuid", characteristic.uuid.toString())
+                putInt("status", status)
+                putBoolean("success", success)
             }
-            if (char != null) return char
-            val fallbackChar = variaService.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (fallbackChar != null) return fallbackChar
-        }
-
-        for (service in services) {
-            val char = service.characteristics.firstOrNull {
-                (uuidMatches(it.uuid, "2b18") || uuidMatches(it.uuid, "6e400003") || uuidMatches(it.uuid, "6e400002")) &&
-                        isNotifyOrIndicate(it)
+            val queue = pendingGattWrites[gatt]
+            if (!queue.isNullOrEmpty()) {
+                queue.poll()
+                processNextGattWrite(gatt)
             }
-            if (char != null) return char
         }
 
-        for (service in services) {
-            if (isGenericService(service.uuid)) continue
-            val char = service.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (char != null) return char
-        }
-
-        for (service in services) {
-            val char = service.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (char != null) return char
-        }
-
-        return null
-    }
-
-    private fun findPowerCharacteristic(services: List<BluetoothGattService>): BluetoothGattCharacteristic? {
-        val standardService = services.firstOrNull { uuidMatches(it.uuid, "1818") }
-        if (standardService != null) {
-            val char = standardService.characteristics.firstOrNull { uuidMatches(it.uuid, "2a63") }
-            if (char != null && isNotifyOrIndicate(char)) return char
-            val fallbackChar = standardService.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (fallbackChar != null) return fallbackChar
-        }
-
-        for (service in services) {
-            val char = service.characteristics.firstOrNull { uuidMatches(it.uuid, "2a63") && isNotifyOrIndicate(it) }
-            if (char != null) return char
-        }
-
-        for (service in services) {
-            if (isGenericService(service.uuid)) continue
-            val char = service.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (char != null) return char
-        }
-
-        for (service in services) {
-            val char = service.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (char != null) return char
-        }
-
-        return null
-    }
-
-    private fun findHeartRateCharacteristic(services: List<BluetoothGattService>): BluetoothGattCharacteristic? {
-        val standardService = services.firstOrNull { uuidMatches(it.uuid, "180d") }
-        if (standardService != null) {
-            val char = standardService.characteristics.firstOrNull { uuidMatches(it.uuid, "2a37") }
-            if (char != null && isNotifyOrIndicate(char)) return char
-            val fallbackChar = standardService.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (fallbackChar != null) return fallbackChar
-        }
-
-        for (service in services) {
-            val char = service.characteristics.firstOrNull { uuidMatches(it.uuid, "2a37") && isNotifyOrIndicate(it) }
-            if (char != null) return char
-        }
-
-        for (service in services) {
-            if (isGenericService(service.uuid)) continue
-            val char = service.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (char != null) return char
-        }
-
-        for (service in services) {
-            val char = service.characteristics.firstOrNull { isNotifyOrIndicate(it) }
-            if (char != null) return char
-        }
-
-        return null
-    }
-
-    private fun isNotifyOrIndicate(char: BluetoothGattCharacteristic): Boolean {
-        val props = char.properties
-        return (props and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) ||
-               (props and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0)
-    }
-
-    private fun isWritable(char: BluetoothGattCharacteristic): Boolean {
-        val props = char.properties
-        return (props and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) ||
-               (props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
-    }
-
-    private fun isGenericService(serviceUuid: UUID): Boolean {
-        val s = serviceUuid.toString().lowercase(Locale.ROOT)
-        return s.startsWith("00001800") || s.startsWith("00001801")
-    }
-
-    private fun uuidMatches(uuid: UUID, shortHexOrFull: String): Boolean {
-        val str = uuid.toString().lowercase(Locale.ROOT)
-        val target = shortHexOrFull.lowercase(Locale.ROOT)
-        return str == target || str.startsWith("0000$target") || str.startsWith(target)
-    }
-
-    private var radarWatchdogJob: Job? = null
-
-    private fun resetRadarWatchdog() {
-        radarWatchdogJob?.cancel()
-        radarWatchdogJob = scope.launch {
-            delay(3500L)
-            if (radarDataStream.value?.threats?.isNotEmpty() == true) {
-                radarWatchdogTimeoutCount++
-                AppLogger.w(TAG, "Radar watchdog timeout (3.5s). Clearing stale radar threats.")
-                AppLogger.setCustomKey("radar_watchdog_timeout_count", radarWatchdogTimeoutCount)
-                AppLogger.logEvent("radar_watchdog_timeout") {
-                    putInt("timeout_count", radarWatchdogTimeoutCount)
-                }
-                radarDataStream.value = RadarData(
-                    threats = emptyList(),
-                    timestamp = System.currentTimeMillis()
+        @Deprecated("Deprecated in Java")
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic
+        ) {
+            @Suppress("DEPRECATION")
+            val value = characteristic.value ?: return
+            if (sensorType == SensorType.RADAR) {
+                val hexString = value.joinToString(" ") { "%02X".format(it) }
+                AppLogger.d(
+                    TAG,
+                    "onCharacteristicChanged (legacy) [RADAR] [Char ${characteristic.uuid}]: $hexString"
                 )
             }
+            handlers[sensorType]?.onDataReceived(characteristic, value)
         }
-    }
 
-    private fun handleDataChanged(sensorType: SensorType, data: ByteArray) {
-        when (sensorType) {
-            SensorType.POWER -> {
-                powerParser.parse(data)?.let { parsed ->
-                    powerDataStream.value = parsed
-                }
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            if (sensorType == SensorType.RADAR) {
+                val hexString = value.joinToString(" ") { "%02X".format(it) }
+                AppLogger.d(
+                    TAG,
+                    "onCharacteristicChanged [RADAR] [Char ${characteristic.uuid}]: $hexString"
+                )
             }
-            SensorType.HEART_RATE -> {
-                heartRateParser.parse(data)?.let { parsed ->
-                    heartRateDataStream.value = parsed
-                }
-            }
-            SensorType.RADAR -> {
-                if (!hasLoggedFirstRadarPacket) {
-                    hasLoggedFirstRadarPacket = true
-                    val hexString = data.joinToString(" ") { "%02X".format(it) }
-                    AppLogger.i(TAG, "First Radar packet received! Hex: [$hexString]")
-                    AppLogger.logEvent("radar_first_packet_received") {
-                        putString("hex_payload", hexString)
-                        putInt("length", data.size)
-                    }
-                }
-                resetRadarWatchdog()
-                radarParser.parse(data)?.let { parsed ->
-                    radarDataStream.value = parsed
-                }
-            }
+            handlers[sensorType]?.onDataReceived(characteristic, value)
         }
     }
 
