@@ -117,21 +117,28 @@ class RadarParser {
                     offset += 3
 
                     val (threatLevel, distanceMeters, speedKmH, idVal) = when {
-                        // Pattern 1: [Target ID, Distance, Threat Level] where b2 is threat level (0..2)
+                        // Pattern 1: b0 > 15 -> b0 is Distance (m), b1 is Relative Speed, b2 is Threat Level
+                        b0 > 15 && b2 in 0..2 -> {
+                            val t = decodeThreatLevel(b2)
+                            val d = b0.toFloat().coerceIn(0f, 150f)
+                            val s = (b1 * 3.6f).coerceIn(0f, 200f)
+                            Quad(t, d, s, targetId++)
+                        }
+                        // Pattern 2: [Target ID, Distance, Threat Level] where b2 is threat level (0..2)
                         b2 in 0..2 && b1 > 0 -> {
                             val t = decodeThreatLevel(b2)
                             val d = b1.toFloat().coerceIn(0f, 150f)
                             val id = if (b0 in 1..15) b0 else targetId++
                             Quad(t, d, 0f, id)
                         }
-                        // Pattern 2: [Target ID, Threat Level, Distance] where b1 is threat level (0..2)
+                        // Pattern 3: [Target ID, Threat Level, Distance] where b1 is threat level (0..2)
                         b1 in 0..2 && b2 > 0 -> {
                             val t = decodeThreatLevel(b1)
                             val d = b2.toFloat().coerceIn(0f, 150f)
                             val id = if (b0 in 1..15) b0 else targetId++
                             Quad(t, d, 0f, id)
                         }
-                        // Pattern 3: [Threat Level, Distance, Speed] where b0 is threat level (1..2)
+                        // Pattern 4: [Threat Level, Distance, Speed] where b0 is threat level (1..2)
                         b0 in 1..2 -> {
                             val t = decodeThreatLevel(b0)
                             val d = b1.toFloat().coerceIn(0f, 150f)

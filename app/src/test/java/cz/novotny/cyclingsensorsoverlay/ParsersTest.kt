@@ -132,6 +132,21 @@ class ParsersTest {
     }
 
     @Test
+    fun radarParser_parsesCoospoPayloadsWithDistanceAsFirstByteInChunk() {
+        val parser = RadarParser()
+
+        // 3-byte chunk stream where b0=80 (Dist=80m), b1=10 (Speed=10m/s=36km/h), b2=1 (Threat=Approaching)
+        val payload80m = byteArrayOf(80.toByte(), 10.toByte(), 0x01.toByte())
+        val res = parser.parse(payload80m)
+        assertNotNull(res)
+        assertEquals(1, res?.threats?.size)
+        val t = res?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, t?.threatLevel)
+        assertEquals(80f, t?.distanceMeters)
+        assertEquals(36f, t?.speedKmH ?: 0f, 0.1f)
+    }
+
+    @Test
     fun radarParser_handlesMultiByteClearPackets() {
         val parser = RadarParser()
 

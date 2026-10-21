@@ -30,7 +30,17 @@ object AppLogger {
         Timber.plant(CrashlyticsTree())
 
         runCatching {
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.setCrashlyticsCollectionEnabled(true)
+        }.onFailure {
+            Log.e("AppLogger", "Failed to enable Crashlytics collection", it)
+        }
+
+        runCatching {
             analytics = FirebaseAnalytics.getInstance(context)
+            analytics?.setAnalyticsCollectionEnabled(true)
+        }.onFailure {
+            Log.e("AppLogger", "Failed to enable Analytics collection", it)
         }
     }
 
@@ -112,12 +122,24 @@ object AppLogger {
      */
     fun sendManualDebugSnapshot(context: Context, extraInfo: String = "") {
         val timestamp = System.currentTimeMillis()
+        Log.i("ManualUserDebug", "sendManualDebugSnapshot triggered. Extra: $extraInfo")
+
         setCustomKey("manual_debug_trigger_time", timestamp.toString())
         if (extraInfo.isNotBlank()) {
             setCustomKey("manual_debug_info", extraInfo)
         }
 
         val nonFatal = Exception("[ManualUserDebug] Ride debug snapshot uploaded at $timestamp. Details: $extraInfo")
+        
+        var uploadSuccess = false
+        runCatching {
+            FirebaseCrashlytics.getInstance().recordException(nonFatal)
+            uploadSuccess = true
+            Log.i("ManualUserDebug", "Successfully called recordException in FirebaseCrashlytics")
+        }.onFailure {
+            Log.e("ManualUserDebug", "Failed to recordException in FirebaseCrashlytics", it)
+        }
+
         Timber.tag("ManualUserDebug").e(nonFatal, "User pressed 'Send Debug Logs' button during ride")
         setCustomKey("last_error", "[ManualUserDebug] User triggered manual debug snapshot")
 
@@ -126,10 +148,16 @@ object AppLogger {
             putLong("timestamp", timestamp)
         }
 
+        val toastText = if (uploadSuccess) {
+            "Debug logs snapshot uploaded to Firebase Crashlytics!"
+        } else {
+            "Error triggering Crashlytics upload - check system logs."
+        }
+
         runCatching {
             android.widget.Toast.makeText(
                 context,
-                "Debug logs snapshot uploaded to Firebase Crashlytics!",
+                toastText,
                 android.widget.Toast.LENGTH_LONG
             ).show()
         }
