@@ -20,4 +20,9 @@ interface GattOperationHelper {
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray
     )
+
+    fun readCharacteristic(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic
+    ): Boolean
 }

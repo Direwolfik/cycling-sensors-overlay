@@ -147,6 +147,96 @@ class ParsersTest {
     }
 
     @Test
+    fun radarParser_parsesCloseRangeThreatsAccurately() {
+        val parser = RadarParser()
+
+        // 1. Coospo close range at 14m: [14m, 10m/s, Threat 1]
+        val coospo14m = byteArrayOf(14.toByte(), 10.toByte(), 0x01.toByte())
+        val res14m = parser.parse(coospo14m)
+        assertNotNull(res14m)
+        assertEquals(1, res14m?.threats?.size)
+        val t14 = res14m?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, t14?.threatLevel)
+        assertEquals(14f, t14?.distanceMeters)
+        assertEquals(36f, t14?.speedKmH ?: 0f, 0.1f)
+
+        // 2. Coospo close range at 2m: [2m, 5m/s, Threat 1]
+        val coospo2m = byteArrayOf(2.toByte(), 5.toByte(), 0x01.toByte())
+        val res2m = parser.parse(coospo2m)
+        assertNotNull(res2m)
+        assertEquals(1, res2m?.threats?.size)
+        val t2 = res2m?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, t2?.threatLevel)
+        assertEquals(2f, t2?.distanceMeters)
+        assertEquals(18f, t2?.speedKmH ?: 0f, 0.1f)
+
+        // 3. Coospo immediate contact at 0m: [0m, 5m/s, Threat 1]
+        val coospo0m = byteArrayOf(0.toByte(), 5.toByte(), 0x01.toByte())
+        val res0m = parser.parse(coospo0m)
+        assertNotNull(res0m)
+        assertEquals(1, res0m?.threats?.size)
+        val t0 = res0m?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, t0?.threatLevel)
+        assertEquals(0f, t0?.distanceMeters)
+
+        // 4. TR70 close range at 2m: [ID=1, Threat=1, Dist=2m]
+        val tr702m = byteArrayOf(0x01.toByte(), 0x01.toByte(), 2.toByte())
+        val resTr702m = parser.parse(tr702m)
+        assertNotNull(resTr702m)
+        assertEquals(1, resTr702m?.threats?.size)
+        val tTr2 = resTr702m?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, tTr2?.threatLevel)
+        assertEquals(2f, tTr2?.distanceMeters)
+
+        // 5. TR70 immediate contact at 0m: [ID=1, Threat=1, Dist=0m]
+        val tr700m = byteArrayOf(0x01.toByte(), 0x01.toByte(), 0.toByte())
+        val resTr700m = parser.parse(tr700m)
+        assertNotNull(resTr700m)
+        assertEquals(1, resTr700m?.threats?.size)
+        val tTr0 = resTr700m?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, tTr0?.threatLevel)
+        assertEquals(0f, tTr0?.distanceMeters)
+
+        // 6. TR70 high speed close range at 1m: [ID=1, Threat=2, Dist=1m]
+        val tr701mHigh = byteArrayOf(0x01.toByte(), 0x02.toByte(), 1.toByte())
+        val resTr701m = parser.parse(tr701mHigh)
+        assertNotNull(resTr701m)
+        assertEquals(1, resTr701m?.threats?.size)
+        val tTr1 = resTr701m?.threats?.first()
+        assertEquals(ThreatLevel.HIGH_SPEED, tTr1?.threatLevel)
+        assertEquals(1f, tTr1?.distanceMeters)
+    }
+
+    @Test
+    fun radarParser_parsesGarminVariaRollingSequencesAndExtendedRange() {
+        val parser = RadarParser()
+
+        // 1. Garmin Varia 4-byte packet with rolling counter 0x00
+        val variaRollover0 = byteArrayOf(0x00.toByte(), 0x01.toByte(), 45.toByte(), 12.toByte())
+        val resRollover = parser.parse(variaRollover0)
+        assertNotNull(resRollover)
+        assertEquals(1, resRollover?.threats?.size)
+        val tRollover = resRollover?.threats?.first()
+        assertEquals(45f, tRollover?.distanceMeters)
+
+        // 2. Garmin Varia 4-byte packet with rolling counter 15 (>10)
+        val variaSeq15 = byteArrayOf(15.toByte(), 0x01.toByte(), 45.toByte(), 12.toByte())
+        val resSeq15 = parser.parse(variaSeq15)
+        assertNotNull(resSeq15)
+        assertEquals(1, resSeq15?.threats?.size)
+        val tSeq15 = resSeq15?.threats?.first()
+        assertEquals(45f, tSeq15?.distanceMeters)
+
+        // 3. Extended detection range up to 180m (not truncated to 150m)
+        val extendedRangePayload = byteArrayOf(180.toByte(), 10.toByte(), 0x01.toByte())
+        val resExtended = parser.parse(extendedRangePayload)
+        assertNotNull(resExtended)
+        assertEquals(1, resExtended?.threats?.size)
+        val tExt = resExtended?.threats?.first()
+        assertEquals(180f, tExt?.distanceMeters)
+    }
+
+    @Test
     fun radarParser_handlesMultiByteClearPackets() {
         val parser = RadarParser()
 

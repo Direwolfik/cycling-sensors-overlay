@@ -3,7 +3,10 @@ package cz.novotny.cyclingsensorsoverlay.data.ble
 import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.*
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import cz.novotny.cyclingsensorsoverlay.data.ble.handler.*
 import cz.novotny.cyclingsensorsoverlay.domain.model.*
@@ -81,6 +84,53 @@ class BleManager(
     private var scanCallback: ScanCallback? = null
     private var isScanning = false
 
+    private val bondStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothDevice.ACTION_BOND_STATE_CHANGED) {
+                val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                }
+                val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                val prevBondState = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE)
+                val address = device?.address ?: return
+
+                AppLogger.i(TAG, "Bluetooth bondState changed for $address: $prevBondState -> $bondState")
+                AppLogger.setCustomKey("last_bond_state_$address", bondState)
+
+                if (bondState == BluetoothDevice.BOND_BONDED) {
+                    AppLogger.i(TAG, "Device $address is now BONDED. Reconnecting waiting sensor slots...")
+                    val radarSlot = activeSlots[SensorType.RADAR]
+                    if (radarSlot != null && radarSlot.macAddress.equals(address, ignoreCase = true)) {
+                        val currentState = _connectionStates.value[SensorType.RADAR]
+                        if (currentState == ConnectionState.DISCONNECTED || currentState == ConnectionState.ERROR || currentState == ConnectionState.CONNECTING) {
+                            AppLogger.i(TAG, "Reconnecting radar slot after successful bonding: $address")
+                            scope.launch {
+                                delay(600L)
+                                connectSlot(radarSlot)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    init {
+        try {
+            val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(bondStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                context.registerReceiver(bondStateReceiver, filter)
+            }
+        } catch (e: Exception) {
+            AppLogger.w(TAG, "Could not register bond state receiver: ${e.message}")
+        }
+    }
+
     private val gattOperationHelper = object : GattOperationHelper {
         override fun setNotification(
             gatt: BluetoothGatt,
@@ -103,6 +153,14 @@ class BleManager(
             value: ByteArray
         ) {
             this@BleManager.queueCharacteristicWrite(gatt, characteristic, value)
+        }
+
+        override fun readCharacteristic(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic
+        ): Boolean {
+            @Suppress("DEPRECATION")
+            return gatt.readCharacteristic(characteristic)
         }
     }
 
@@ -228,6 +286,22 @@ class BleManager(
 
         try {
             val device = adapter.getRemoteDevice(mac)
+
+            // For radar sensors (e.g. Garmin Varia), ensure the device is paired/bonded.
+            // If unbonded, initiate system bonding so encrypted attributes and notifications succeed.
+            if (slot.sensorType == SensorType.RADAR) {
+                if (device.bondState == BluetoothDevice.BOND_NONE) {
+                    AppLogger.i(TAG, "Radar device $mac is unbonded (BOND_NONE). Initiating Bluetooth bonding (createBond)...")
+                    AppLogger.logEvent("ble_radar_bonding_initiated") {
+                        putString("mac", mac)
+                    }
+                    val bondInitiated = device.createBond()
+                    AppLogger.d(TAG, "device.createBond() initiated -> $bondInitiated")
+                } else {
+                    AppLogger.d(TAG, "Radar device $mac bondState is ${device.bondState}")
+                }
+            }
+
             val gattCallback = createGattCallback(slot.sensorType)
             val gatt =
                 device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
@@ -304,8 +378,12 @@ class BleManager(
                 val value = next.value
                 @Suppress("DEPRECATION")
                 descriptor.value = value
-                val res =
+                val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     gatt.writeDescriptor(descriptor, value)
+                } else {
+                    @Suppress("DEPRECATION")
+                    if (gatt.writeDescriptor(descriptor)) BluetoothGatt.GATT_SUCCESS else -1
+                }
                 val success = (res == BluetoothGatt.GATT_SUCCESS)
                 AppLogger.d(
                     TAG,
@@ -329,12 +407,18 @@ class BleManager(
                 val characteristic = next.characteristic
                 val value = next.value
                 val hex = value.joinToString(" ") { "%02X".format(it) }
-                val res =
+                val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     gatt.writeCharacteristic(
                         characteristic,
                         value,
                         BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                     )
+                } else {
+                    @Suppress("DEPRECATION")
+                    characteristic.value = value
+                    @Suppress("DEPRECATION")
+                    if (gatt.writeCharacteristic(characteristic)) BluetoothGatt.GATT_SUCCESS else -1
+                }
                 val success = (res == BluetoothGatt.GATT_SUCCESS)
                 AppLogger.d(
                     TAG,
@@ -388,7 +472,7 @@ class BleManager(
                 BluetoothProfile.STATE_CONNECTED -> {
                     AppLogger.i(
                         TAG,
-                        "GATT Connected to $sensorType (status=$status). Discovering services..."
+                        "GATT Connected to $sensorType (status=$status). Requesting MTU 512..."
                     )
                     AppLogger.setCustomKey(
                         "${sensorType.name.lowercase()}_connection_state",
@@ -399,11 +483,17 @@ class BleManager(
                         putInt("status", status)
                     }
                     updateConnectionState(sensorType, ConnectionState.CONNECTING)
-                    gatt.discoverServices()
+
+                    val mtuRequested = gatt.requestMtu(512)
+                    AppLogger.d(TAG, "gatt.requestMtu(512) initiated -> $mtuRequested for $sensorType")
+                    if (!mtuRequested) {
+                        gatt.discoverServices()
+                    }
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    AppLogger.w(TAG, "GATT Disconnected from $sensorType (status=$status)")
+                    val device = gatt.device
+                    AppLogger.w(TAG, "GATT Disconnected from $sensorType (status=$status), device bondState=${device?.bondState}")
                     AppLogger.setCustomKey(
                         "${sensorType.name.lowercase()}_connection_state",
                         "DISCONNECTED"
@@ -412,6 +502,11 @@ class BleManager(
                         putString("sensor_type", sensorType.name)
                         putInt("status", status)
                     }
+
+                    if (sensorType == SensorType.RADAR && device?.bondState == BluetoothDevice.BOND_BONDING) {
+                        AppLogger.i(TAG, "Radar disconnected while pairing/bonding is actively in progress. Waiting for bonding broadcast.")
+                    }
+
                     gatt.close()
                     activeGatts.remove(sensorType)
                     handlers[sensorType]?.onDisconnected()
@@ -434,6 +529,15 @@ class BleManager(
                     }
                 }
             }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            AppLogger.i(
+                TAG,
+                "onMtuChanged for $sensorType: mtu=$mtu, status=$status. Discovering services..."
+            )
+            AppLogger.setCustomKey("${sensorType.name.lowercase()}_mtu", mtu)
+            gatt.discoverServices()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
