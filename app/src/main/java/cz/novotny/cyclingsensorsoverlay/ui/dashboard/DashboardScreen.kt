@@ -278,7 +278,7 @@ private fun SendDebugLogsCard(
                 Text(text = "Send Debug Logs?")
             },
             text = {
-                Text(text = "This will capture a live snapshot of BLE sensor telemetry, connection states, and radar log buffer, uploading it directly to Firebase Crashlytics.")
+                Text(text = "This will capture a live snapshot of BLE sensor telemetry, connection states, and radar log buffer, uploading it directly to Firebase Crashlytics and copying logs to clipboard.")
             },
             confirmButton = {
                 Button(
@@ -292,10 +292,21 @@ private fun SendDebugLogsCard(
                 }
             },
             dismissButton = {
-                TextButton(
-                    onClick = { showConfirmDialog = false }
-                ) {
-                    Text("Cancel")
+                Row {
+                    TextButton(
+                        onClick = {
+                            showConfirmDialog = false
+                            val summary = "GpsSpeed: ${sensorState.gpsSpeedKmh ?: "N/A"} km/h, Connections: ${sensorState.connectionStates}, RadarTargets: ${sensorState.radarData?.threats?.size ?: 0}"
+                            AppLogger.shareDebugLogs(context, summary)
+                        }
+                    ) {
+                        Text("Share...")
+                    }
+                    TextButton(
+                        onClick = { showConfirmDialog = false }
+                    ) {
+                        Text("Cancel")
+                    }
                 }
             }
         )

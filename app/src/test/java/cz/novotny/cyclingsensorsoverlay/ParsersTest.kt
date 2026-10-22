@@ -237,6 +237,38 @@ class ParsersTest {
     }
 
     @Test
+    fun radarParser_parsesAntPlusCombinedNibbleThreats() {
+        val parser = RadarParser()
+
+        // 1. 3-byte record with Target 1 and Approaching (0x11 = upper nibble 1, lower nibble 1), 60m, speed 8 m/s
+        val antApproaching = byteArrayOf(0x11.toByte(), 60.toByte(), 8.toByte())
+        val resApp = parser.parse(antApproaching)
+        assertNotNull(resApp)
+        assertEquals(1, resApp?.threats?.size)
+        val tApp = resApp?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, tApp?.threatLevel)
+        assertEquals(60f, tApp?.distanceMeters)
+
+        // 2. 3-byte record with Target 2 and High Speed (0x22 = upper nibble 2, lower nibble 2), 90m, speed 20 m/s
+        val antHighSpeed = byteArrayOf(0x22.toByte(), 90.toByte(), 20.toByte())
+        val resHigh = parser.parse(antHighSpeed)
+        assertNotNull(resHigh)
+        assertEquals(1, resHigh?.threats?.size)
+        val tHigh = resHigh?.threats?.first()
+        assertEquals(ThreatLevel.HIGH_SPEED, tHigh?.threatLevel)
+        assertEquals(90f, tHigh?.distanceMeters)
+
+        // 3. Low relative speed approaching target (e.g. car matching speed at 50m: [1, 50, 2])
+        val lowSpeedApproaching = byteArrayOf(0x01.toByte(), 50.toByte(), 2.toByte())
+        val resLow = parser.parse(lowSpeedApproaching)
+        assertNotNull(resLow)
+        assertEquals(1, resLow?.threats?.size)
+        val tLow = resLow?.threats?.first()
+        assertEquals(ThreatLevel.APPROACHING, tLow?.threatLevel)
+        assertEquals(50f, tLow?.distanceMeters)
+    }
+
+    @Test
     fun radarParser_handlesMultiByteClearPackets() {
         val parser = RadarParser()
 

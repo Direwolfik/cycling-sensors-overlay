@@ -172,48 +172,29 @@ class RadarSensorHandler(
         notifyChars.add(primaryChar.uuid.toString())
         gattHelper.queueCccdWrite(gatt, primaryChar)
 
-        // 2. Battery Service trigger (Garmin Varia central handshake prerequisite)
-        val batteryService = gatt.services.firstOrNull { uuidMatches(it.uuid, "180f") }
-        if (batteryService != null) {
-            val batteryLevelChar = batteryService.characteristics.firstOrNull { uuidMatches(it.uuid, "2a19") }
-            if (batteryLevelChar != null) {
-                AppLogger.d(TAG, "Reading Battery Level char for Garmin Varia handshake prerequisite")
-                gattHelper.readCharacteristic(gatt, batteryLevelChar)
-                if (isNotifyOrIndicate(batteryLevelChar)) {
-                    gattHelper.setNotification(gatt, batteryLevelChar, true)
-                    gattHelper.queueCccdWrite(gatt, batteryLevelChar)
+        // 2. Subscribe to all notify/indicate characteristics across all non-generic services
+        for (service in gatt.services) {
+            if (isGenericService(service.uuid)) continue
+            for (c in service.characteristics) {
+                if (c.uuid != primaryChar.uuid && isNotifyOrIndicate(c)) {
+                    val subOk = gattHelper.setNotification(gatt, c, true)
+                    AppLogger.d(TAG, "Radar secondary setNotification on ${c.uuid} -> $subOk")
+                    notifyChars.add(c.uuid.toString())
+                    gattHelper.queueCccdWrite(gatt, c)
                 }
             }
         }
 
-        // 3. Subscribe to secondary radar characteristics and send specific activation writes
+        // 3. Send radar activation commands to writable characteristics across non-generic services
+        // Handles Garmin Varia Control (0x6A4E3201 / 0x6A4E3202), Nordic UART RX (0x6E400002), and vendor control points
         for (service in gatt.services) {
-            val isRadarService = uuidMatches(service.uuid, "6a4e3200") ||
-                    uuidMatches(service.uuid, "183c") ||
-                    uuidMatches(service.uuid, "6e400001")
-
-            if (isRadarService) {
-                for (c in service.characteristics) {
-                    if (c.uuid != primaryChar.uuid && isNotifyOrIndicate(c)) {
-                        val subOk = gattHelper.setNotification(gatt, c, true)
-                        AppLogger.d(TAG, "Radar secondary setNotification on ${c.uuid} -> $subOk")
-                        notifyChars.add(c.uuid.toString())
-                        gattHelper.queueCccdWrite(gatt, c)
-                    }
-
-                    // Garmin Varia Control characteristic (0x6A4E3202) activation
-                    if (uuidMatches(c.uuid, "6a4e3202") && isWritable(c)) {
-                        writeChars.add(c.uuid.toString())
-                        AppLogger.i(TAG, "Sending Varia control activation [0x01, 0x01] to ${c.uuid}")
-                        gattHelper.queueCharacteristicWrite(gatt, c, byteArrayOf(0x01, 0x01))
-                    }
-
-                    // Nordic UART RX write characteristic (0x6E400002) activation if needed
-                    if (uuidMatches(c.uuid, "6e400002") && isWritable(c)) {
-                        writeChars.add(c.uuid.toString())
-                        AppLogger.i(TAG, "Sending UART RX activation [0x01, 0x01] to ${c.uuid}")
-                        gattHelper.queueCharacteristicWrite(gatt, c, byteArrayOf(0x01, 0x01))
-                    }
+            if (isGenericService(service.uuid)) continue
+            for (c in service.characteristics) {
+                if (isWritable(c)) {
+                    writeChars.add(c.uuid.toString())
+                    AppLogger.i(TAG, "Sending radar activation [0x01, 0x01] and [0x00] to ${c.uuid}")
+                    gattHelper.queueCharacteristicWrite(gatt, c, byteArrayOf(0x01, 0x01))
+                    gattHelper.queueCharacteristicWrite(gatt, c, byteArrayOf(0x00))
                 }
             }
         }

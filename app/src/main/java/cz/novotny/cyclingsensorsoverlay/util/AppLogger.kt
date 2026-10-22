@@ -1,12 +1,19 @@
 package cz.novotny.cyclingsensorsoverlay.util
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import com.google.firebase.analytics.FirebaseAnalytics
 import com.google.firebase.crashlytics.FirebaseCrashlytics
 import cz.novotny.cyclingsensorsoverlay.BuildConfig
 import timber.log.Timber
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.ConcurrentLinkedDeque
 
 /**
  * Unified logger for Cycling Sensors Overlay powered by Timber and Firebase
@@ -19,6 +26,23 @@ import timber.log.Timber
 object AppLogger {
 
     private var analytics: FirebaseAnalytics? = null
+    private val recentLogs = ConcurrentLinkedDeque<String>()
+    private const val MAX_LOG_HISTORY = 100
+
+    private fun recordMemoryLog(level: String, tag: String, message: String) {
+        val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+        recentLogs.add("$time [$level/$tag] $message")
+        while (recentLogs.size > MAX_LOG_HISTORY) {
+            recentLogs.poll()
+        }
+    }
+
+    /**
+     * Returns the formatted recent in-memory log buffer (up to 100 lines).
+     */
+    fun getRecentLogsText(): String {
+        return recentLogs.joinToString("\n")
+    }
 
     /**
      * Initializes Timber trees and Firebase Analytics with the application context.
@@ -32,6 +56,7 @@ object AppLogger {
         runCatching {
             val crashlytics = FirebaseCrashlytics.getInstance()
             crashlytics.setCrashlyticsCollectionEnabled(true)
+            crashlytics.sendUnsentReports()
         }.onFailure {
             Log.e("AppLogger", "Failed to enable Crashlytics collection", it)
         }
@@ -45,16 +70,18 @@ object AppLogger {
     }
 
     /**
-     * Logs a debug message using Timber.
+     * Logs a debug message using Timber and memory buffer.
      */
     fun d(tag: String, message: String) {
+        recordMemoryLog("D", tag, message)
         Timber.tag(tag).d(message)
     }
 
     /**
-     * Logs an info message using Timber.
+     * Logs an info message using Timber and memory buffer.
      */
     fun i(tag: String, message: String) {
+        recordMemoryLog("I", tag, message)
         Timber.tag(tag).i(message)
     }
 
@@ -62,6 +89,7 @@ object AppLogger {
      * Logs a warning message using Timber and sets a custom state key in Crashlytics.
      */
     fun w(tag: String, message: String) {
+        recordMemoryLog("W", tag, message)
         Timber.tag(tag).w(message)
         setCustomKey("last_warning", "[$tag] $message")
     }
@@ -74,6 +102,7 @@ object AppLogger {
      * @param throwable Optional exception associated with the failure.
      */
     fun e(tag: String, message: String, throwable: Throwable? = null) {
+        recordMemoryLog("E", tag, message)
         val nonFatal = throwable ?: Exception("[$tag] $message")
         Timber.tag(tag).e(nonFatal, message)
         setCustomKey("last_error", "[$tag] $message")
@@ -118,7 +147,7 @@ object AppLogger {
 
     /**
      * Manually triggers a Crashlytics non-fatal exception snapshot containing current session keys
-     * and log history, giving immediate visibility in Firebase Console.
+     * and log history, flushing unsent reports to ensure delivery, and copying logs to clipboard.
      */
     fun sendManualDebugSnapshot(context: Context, extraInfo: String = "") {
         val timestamp = System.currentTimeMillis()
@@ -133,9 +162,11 @@ object AppLogger {
         
         var uploadSuccess = false
         runCatching {
-            FirebaseCrashlytics.getInstance().recordException(nonFatal)
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.recordException(nonFatal)
+            crashlytics.sendUnsentReports()
             uploadSuccess = true
-            Log.i("ManualUserDebug", "Successfully called recordException in FirebaseCrashlytics")
+            Log.i("ManualUserDebug", "Successfully recorded exception and called sendUnsentReports in FirebaseCrashlytics")
         }.onFailure {
             Log.e("ManualUserDebug", "Failed to recordException in FirebaseCrashlytics", it)
         }
@@ -148,10 +179,20 @@ object AppLogger {
             putLong("timestamp", timestamp)
         }
 
+        // Copy snapshot and recent logs directly to Android system clipboard as a reliable fallback
+        runCatching {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            val clipData = ClipData.newPlainText(
+                "Cycling Sensors Debug Logs",
+                "Snapshot: $extraInfo\n\nRecent In-Memory Logs:\n${getRecentLogsText()}"
+            )
+            clipboard?.setPrimaryClip(clipData)
+        }
+
         val toastText = if (uploadSuccess) {
-            "Debug logs snapshot uploaded to Firebase Crashlytics!"
+            "Debug logs uploaded to Firebase Crashlytics & copied to clipboard!"
         } else {
-            "Error triggering Crashlytics upload - check system logs."
+            "Crashlytics queued; logs copied to clipboard."
         }
 
         runCatching {
@@ -160,6 +201,25 @@ object AppLogger {
                 toastText,
                 android.widget.Toast.LENGTH_LONG
             ).show()
+        }
+    }
+
+    /**
+     * Opens Android system sharesheet allowing rider to share recent logs directly via email, notes, or chat.
+     */
+    fun shareDebugLogs(context: Context, extraInfo: String = "") {
+        runCatching {
+            val fullText = "Cycling Sensors Overlay Debug Logs\n$extraInfo\n\nRecent Logs:\n${getRecentLogsText()}"
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Cycling Sensors Overlay Debug Logs")
+                putExtra(Intent.EXTRA_TEXT, fullText)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(sendIntent, "Share Debug Logs").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(chooser)
         }
     }
 }

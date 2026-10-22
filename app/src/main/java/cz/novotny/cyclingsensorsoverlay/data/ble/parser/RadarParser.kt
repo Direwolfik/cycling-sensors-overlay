@@ -140,34 +140,33 @@ class RadarParser {
                     val t2 = decodeThreatLevel(b2)
 
                     val (threatLevel, distanceMeters, speedKmH, idVal) = when {
-                        // Pattern 1: [ID in 1..10, Threat in 1..2, Distance in 0..2] -> Close range TR70 (0m..2m)
-                        b0 in 1..10 && t1 != ThreatLevel.NONE && b2 in 0..2 -> {
+                        // Pattern 1: [ID in 1..15, Threat in 1..2, Distance in 0..2] -> Close range TR70 (0m..2m)
+                        b0 in 1..15 && t1 != ThreatLevel.NONE && b1 in 1..2 && b2 in 0..2 -> {
                             Quad(t1, b2.toFloat().coerceIn(0f, 200f), 0f, b0)
                         }
 
-                        // Pattern 2: [ID, Threat Level, Distance > 2] -> Standard TR70 (e.g. [1, 1, 80], [1, 1, 18])
-                        b2 > 2 && t1 != ThreatLevel.NONE && (t0 != ThreatLevel.NONE || b0 in 1..15) -> {
+                        // Pattern 2: [ID in 1..15, Threat Level, Distance > 2] -> Standard TR70 (e.g. [1, 1, 80], [1, 1, 18])
+                        b2 > 2 && t1 != ThreatLevel.NONE && b1 in 1..2 && (b0 in 1..15 || t0 != ThreatLevel.NONE) -> {
                             val d = b2.toFloat().coerceIn(0f, 200f)
                             val id = if (b0 in 1..15) b0 else targetId++
                             Quad(t1, d, 0f, id)
                         }
 
                         // Pattern 3: [Distance, Speed, Threat Level in 1..2] -> Coospo TR70 (e.g. [80, 10, 1], [14, 10, 1], [2, 5, 1], [0, 5, 1])
-                        t2 != ThreatLevel.NONE && b1 <= 25 -> {
+                        t2 != ThreatLevel.NONE && b2 in 1..2 && b1 <= 25 -> {
                             val d = b0.toFloat().coerceIn(0f, 200f)
                             val s = (b1 * 3.6f).coerceIn(0f, 200f)
                             Quad(t2, d, s, targetId++)
                         }
 
-                        // Pattern 4: [ID, Distance > 25, Threat Level in 0..2] -> e.g. [1, 38, 0] Clear or [1, 38, 1]
-                        b2 in 0..2 && b1 > 25 -> {
+                        // Pattern 4: Explicit target clear packet [ID in 1..15, Distance > 20, Threat = 0] -> e.g. [1, 38, 0] Clear
+                        b2 == 0 && b1 > 20 && b0 in 1..15 -> {
                             val d = b1.toFloat().coerceIn(0f, 200f)
-                            val id = if (b0 in 1..15) b0 else targetId++
-                            Quad(t2, d, 0f, id)
+                            Quad(ThreatLevel.NONE, d, 0f, b0)
                         }
 
-                        // Pattern 5: [Threat Level, Distance, Speed] where b0 is threat level and b1 is distance
-                        t0 != ThreatLevel.NONE && b1 > 0 -> {
+                        // Pattern 5: [Threat Level, Distance, Speed] where b0 is threat level and b1 is distance (e.g. [1, 45, 12], [2, 30, 10])
+                        t0 != ThreatLevel.NONE && b0 in 1..2 && b1 > 0 -> {
                             val d = b1.toFloat().coerceIn(0f, 200f)
                             val s = (b2 * 3.6f).coerceIn(0f, 200f)
                             Quad(t0, d, s, targetId++)
@@ -246,11 +245,13 @@ class RadarParser {
         if (rawByte == 0) return ThreatLevel.NONE
         if (rawByte in 1..2) return ThreatLevel.fromValue(rawByte)
 
-        // Check clean upper nibble (e.g. 0x10 = APPROACHING, 0x20 = HIGH_SPEED)
-        if ((rawByte and 0x0F) == 0) {
-            val upperNibble = (rawByte shr 4) and 0x07
-            if (upperNibble in 1..2) return ThreatLevel.fromValue(upperNibble)
-        }
+        // Check lower nibble (bits 0..2) - ANT+ and standard cycling radar combines Target ID (bits 4..7) and Threat (bits 0..2)
+        val lowerNibble = rawByte and 0x07
+        if (lowerNibble in 1..2) return ThreatLevel.fromValue(lowerNibble)
+
+        // Check upper nibble (bits 4..6) - vendors shifting threat level to upper nibble
+        val upperNibble = (rawByte shr 4) and 0x07
+        if (upperNibble in 1..2) return ThreatLevel.fromValue(upperNibble)
 
         return ThreatLevel.NONE
     }
