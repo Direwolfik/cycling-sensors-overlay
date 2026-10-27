@@ -76,6 +76,7 @@ class ScannerViewModel(
 
     private var scanJob: Job? = null
     private var lastSortTimestamp = 0L
+    private val initialAutoConnectedSlots = mutableSetOf<SensorType>()
 
     init {
         observeAssignedSlotsAndConnectionStates()
@@ -94,6 +95,16 @@ class ScannerViewModel(
                         assignedSlots = slots,
                         connectionStates = connections
                     )
+                }
+                if (_uiState.value.permissionsState.hasBluetoothPermission) {
+                    slots.forEach { (type, slot) ->
+                        val isDisconnected = connections[type] == ConnectionState.DISCONNECTED
+                        if (!slot.macAddress.isNullOrBlank() && slot.autoConnect && isDisconnected) {
+                            if (initialAutoConnectedSlots.add(type)) {
+                                connectSensorUseCase(slot)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -122,6 +133,7 @@ class ScannerViewModel(
         currentState.assignedSlots.forEach { (type, slot) ->
             val isDisconnected = currentState.connectionStates[type] == ConnectionState.DISCONNECTED
             if (!slot.macAddress.isNullOrBlank() && slot.autoConnect && isDisconnected) {
+                initialAutoConnectedSlots.add(type)
                 connectSensorUseCase(slot)
             }
         }
@@ -253,6 +265,7 @@ class ScannerViewModel(
      * Disconnects and removes saved device assignment for the given [sensorType].
      */
     fun clearSlotAssignment(sensorType: SensorType) {
+        initialAutoConnectedSlots.remove(sensorType)
         viewModelScope.launch {
             clearSlotUseCase(sensorType)
         }

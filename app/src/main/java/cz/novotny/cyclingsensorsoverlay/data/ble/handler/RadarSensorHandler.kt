@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattService
 import cz.novotny.cyclingsensorsoverlay.data.ble.handler.BleGattUtils.isGenericService
 import cz.novotny.cyclingsensorsoverlay.data.ble.handler.BleGattUtils.isNotifyOrIndicate
+import cz.novotny.cyclingsensorsoverlay.data.ble.handler.BleGattUtils.isSystemOrDfuService
 import cz.novotny.cyclingsensorsoverlay.data.ble.handler.BleGattUtils.isWritable
 import cz.novotny.cyclingsensorsoverlay.data.ble.handler.BleGattUtils.uuidMatches
 import cz.novotny.cyclingsensorsoverlay.data.ble.parser.RadarParser
@@ -38,6 +39,7 @@ class RadarSensorHandler(
 
     private var simulationJob: Job? = null
     private var radarWatchdogJob: Job? = null
+    private var fallbackWakeupJob: Job? = null
     private var radarWatchdogTimeoutCount = 0
     private var hasLoggedFirstRadarPacket = false
 
@@ -121,7 +123,21 @@ class RadarSensorHandler(
             if (fallbackChar != null) return fallbackChar
         }
 
-        // 3. Nordic UART Service (0x6E400001 - Coospo TR70, Magene L508, Bryton Gardia)
+        // 3. Coospo TR70 Proprietary Radar Service (0xFDB0 -> 0xFDB1)
+        val coospoService = services.firstOrNull { uuidMatches(it.uuid, "fdb0") }
+        if (coospoService != null) {
+            val char = coospoService.characteristics.firstOrNull {
+                uuidMatches(it.uuid, "fdb1") && isNotifyOrIndicate(it)
+            }
+            if (char != null) {
+                AppLogger.i(TAG, "Found Coospo TR70 radar characteristic ${char.uuid} in service ${coospoService.uuid}")
+                return char
+            }
+            val fallbackChar = coospoService.characteristics.firstOrNull { isNotifyOrIndicate(it) }
+            if (fallbackChar != null) return fallbackChar
+        }
+
+        // 4. Nordic UART Service (0x6E400001 - Magene L508, Bryton Gardia, etc.)
         val nusService = services.firstOrNull { uuidMatches(it.uuid, "6e400001") }
         if (nusService != null) {
             val char = nusService.characteristics.firstOrNull {
@@ -133,17 +149,25 @@ class RadarSensorHandler(
             if (fallbackChar != null) return fallbackChar
         }
 
-        // 4. Any characteristic matching known radar UUIDs across any discovered service
+        // 5. Any characteristic matching known radar UUIDs across any discovered service
         for (service in services) {
             val char = service.characteristics.firstOrNull {
                 (uuidMatches(it.uuid, "6a4e3203") || uuidMatches(it.uuid, "6a4e3204") ||
-                        uuidMatches(it.uuid, "2b18") || uuidMatches(it.uuid, "6e400003") || uuidMatches(it.uuid, "6e400002")) &&
+                        uuidMatches(it.uuid, "2b18") || uuidMatches(it.uuid, "fdb1") ||
+                        uuidMatches(it.uuid, "6e400003") || uuidMatches(it.uuid, "6e400002")) &&
                         isNotifyOrIndicate(it)
             }
             if (char != null) return char
         }
 
-        // 5. Fallback non-generic notify characteristic
+        // 6. Fallback non-system/non-DFU notify characteristic
+        for (service in services) {
+            if (isSystemOrDfuService(service.uuid)) continue
+            val char = service.characteristics.firstOrNull { isNotifyOrIndicate(it) }
+            if (char != null) return char
+        }
+
+        // 7. Fallback non-generic notify characteristic
         for (service in services) {
             if (isGenericService(service.uuid)) continue
             val char = service.characteristics.firstOrNull { isNotifyOrIndicate(it) }
@@ -165,6 +189,7 @@ class RadarSensorHandler(
     ) {
         val notifyChars = mutableListOf<String>()
         val writeChars = mutableListOf<String>()
+        val coospoControlChars = mutableListOf<BluetoothGattCharacteristic>()
 
         // 1. Subscribe to primary radar characteristic
         val setOk = gattHelper.setNotification(gatt, primaryChar, true)
@@ -172,9 +197,9 @@ class RadarSensorHandler(
         notifyChars.add(primaryChar.uuid.toString())
         gattHelper.queueCccdWrite(gatt, primaryChar)
 
-        // 2. Subscribe to all notify/indicate characteristics across all non-generic services
+        // 2. Subscribe to secondary notify/indicate characteristics in non-system/non-DFU services
         for (service in gatt.services) {
-            if (isGenericService(service.uuid)) continue
+            if (isSystemOrDfuService(service.uuid)) continue
             for (c in service.characteristics) {
                 if (c.uuid != primaryChar.uuid && isNotifyOrIndicate(c)) {
                     val subOk = gattHelper.setNotification(gatt, c, true)
@@ -185,16 +210,48 @@ class RadarSensorHandler(
             }
         }
 
-        // 3. Send radar activation commands to writable characteristics across non-generic services
-        // Handles Garmin Varia Control (0x6A4E3201 / 0x6A4E3202), Nordic UART RX (0x6E400002), and vendor control points
+        // 3. Handle vendor control characteristics selectively without corrupting Coospo/DFU state
         for (service in gatt.services) {
-            if (isGenericService(service.uuid)) continue
+            if (isSystemOrDfuService(service.uuid)) continue
             for (c in service.characteristics) {
-                if (isWritable(c)) {
-                    writeChars.add(c.uuid.toString())
-                    AppLogger.i(TAG, "Sending radar activation [0x01, 0x01] and [0x00] to ${c.uuid}")
-                    gattHelper.queueCharacteristicWrite(gatt, c, byteArrayOf(0x01, 0x01))
-                    gattHelper.queueCharacteristicWrite(gatt, c, byteArrayOf(0x00))
+                if (!isWritable(c)) continue
+                writeChars.add(c.uuid.toString())
+                when {
+                    // Explicit Garmin Varia Control characteristic: send [0x01, 0x01] enable (never [0x00])
+                    uuidMatches(c.uuid, "6a4e3202") || uuidMatches(c.uuid, "6a4e3201") -> {
+                        AppLogger.i(TAG, "Sending Garmin Varia activation [0x01, 0x01] to ${c.uuid}")
+                        gattHelper.queueCharacteristicWrite(gatt, c, byteArrayOf(0x01, 0x01))
+                    }
+                    // Coospo TR70 control characteristics (0xFDB2 / 0xFDB1): only send valid 0xC8 frame if silent
+                    uuidMatches(c.uuid, "fdb2") || uuidMatches(c.uuid, "fdb1") || uuidMatches(service.uuid, "fdb0") -> {
+                        coospoControlChars.add(c)
+                    }
+                }
+            }
+        }
+
+        // If Coospo control characteristics are present and no radar packet arrives within 1.5s of CCCD setup,
+        // send valid 0xC8-framed Coospo status/wake-up query frames with valid checksums.
+        fallbackWakeupJob?.cancel()
+        if (coospoControlChars.isNotEmpty()) {
+            fallbackWakeupJob = scope.launch {
+                delay(1500L)
+                if (!hasLoggedFirstRadarPacket) {
+                    for (c in coospoControlChars) {
+                        AppLogger.i(TAG, "No Coospo packet after 1.5s; sending 0xC8 query frame to ${c.uuid}")
+                        // [0xC8, len=0x04, cmd=0x03 (status query), checksum=0xCF]
+                        gattHelper.queueCharacteristicWrite(
+                            gatt,
+                            c,
+                            byteArrayOf(0xC8.toByte(), 0x04, 0x03, 0xCF.toByte())
+                        )
+                        // [0xC8, len=0x05, cmd=0x02 (radar stream enable), 0x01, checksum=0xD0]
+                        gattHelper.queueCharacteristicWrite(
+                            gatt,
+                            c,
+                            byteArrayOf(0xC8.toByte(), 0x05, 0x02, 0x01, 0xD0.toByte())
+                        )
+                    }
                 }
             }
         }
@@ -210,6 +267,7 @@ class RadarSensorHandler(
     override fun onDataReceived(characteristic: BluetoothGattCharacteristic, data: ByteArray) {
         if (!hasLoggedFirstRadarPacket) {
             hasLoggedFirstRadarPacket = true
+            fallbackWakeupJob?.cancel()
             val hexString = data.joinToString(" ") { "%02X".format(it) }
             AppLogger.i(TAG, "First Radar packet received! Hex: [$hexString]")
             AppLogger.logEvent("radar_first_packet_received") {
@@ -217,8 +275,8 @@ class RadarSensorHandler(
                 putInt("length", data.size)
             }
         }
-        resetRadarWatchdog()
         parser.parse(data)?.let { parsed ->
+            resetRadarWatchdog()
             _dataStream.value = parsed
         }
     }
@@ -244,6 +302,7 @@ class RadarSensorHandler(
 
     override fun onDisconnected() {
         radarWatchdogJob?.cancel()
+        fallbackWakeupJob?.cancel()
         simulationJob?.cancel()
         _dataStream.value = null
         hasLoggedFirstRadarPacket = false

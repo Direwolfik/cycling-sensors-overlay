@@ -81,6 +81,19 @@ class ScannerViewModelTest {
     }
 
     @Test
+    fun autoConnect_triggersWhenSlotsEmitAfterPermissionsGranted() = runTest {
+        // Simulate ON_RESUME firing before DataStore emits saved slots
+        viewModel.updatePermissionsState(PermissionsState(hasBluetoothPermission = true))
+        advanceUntilIdle()
+
+        val radarSlot = SensorSlot("radar_slot", SensorType.RADAR, "TR70", "D5:9C:64:5E:46:9C")
+        fakeSlotRepository.saveSlot(radarSlot)
+        advanceUntilIdle()
+
+        assertEquals(ConnectionState.CONNECTED, viewModel.uiState.value.connectionStates[SensorType.RADAR])
+    }
+
+    @Test
     fun scanToggle_startsAndStopsScanWhenPermissionGranted() = runTest {
         viewModel.updatePermissionsState(PermissionsState(hasBluetoothPermission = true))
         advanceUntilIdle()
@@ -142,11 +155,13 @@ class ScannerViewModelTest {
         val powerDeviceByName = DiscoveredDevice("Favero Assioma Duo", "11:22", -60)
         val hrDeviceByName = DiscoveredDevice("Wahoo TICKR", "33:44", -65)
         val radarDeviceByName = DiscoveredDevice("Garmin Varia RTL515", "55:66", -70)
+        val coospoRadarByUuid = DiscoveredDevice(null, "D5:9C:64:5E:46:9C", -62, serviceUuids = listOf("0000fdb0-0000-1000-8000-00805f9b34fb"))
 
         assertTrue(powerDeviceByUuid.isPowerMatch())
         assertTrue(powerDeviceByName.isPowerMatch())
         assertTrue(hrDeviceByName.isHeartRateMatch())
         assertTrue(radarDeviceByName.isRadarMatch())
+        assertTrue(coospoRadarByUuid.isRadarMatch())
     }
 
     @Test

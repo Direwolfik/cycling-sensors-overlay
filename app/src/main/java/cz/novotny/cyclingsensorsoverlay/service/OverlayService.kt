@@ -26,6 +26,9 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import cz.novotny.cyclingsensorsoverlay.MainActivity
 import cz.novotny.cyclingsensorsoverlay.data.location.GpsLocationManager
 import cz.novotny.cyclingsensorsoverlay.domain.model.CombinedSensorState
+import cz.novotny.cyclingsensorsoverlay.domain.model.ConnectionState
+import cz.novotny.cyclingsensorsoverlay.domain.repository.BleRepository
+import cz.novotny.cyclingsensorsoverlay.domain.usecase.GetAssignedSlotsUseCase
 import cz.novotny.cyclingsensorsoverlay.domain.usecase.ObserveSensorDataUseCase
 import cz.novotny.cyclingsensorsoverlay.ui.overlay.OverlayWidget
 import cz.novotny.cyclingsensorsoverlay.ui.overlay.RadarSideBarWidget
@@ -42,6 +45,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 
 /**
@@ -85,6 +89,8 @@ class OverlayService : Service(), KoinComponent {
     }
 
     private val observeSensorDataUseCase: ObserveSensorDataUseCase by inject()
+    private val getAssignedSlotsUseCase: GetAssignedSlotsUseCase by inject()
+    private val bleRepository: BleRepository by inject()
     private val gpsLocationManager: GpsLocationManager by inject()
 
     private lateinit var windowManager: WindowManager
@@ -111,6 +117,19 @@ class OverlayService : Service(), KoinComponent {
 
         if (PermissionUtils.hasLocationPermission(this)) {
             gpsLocationManager.startLocationUpdates()
+        }
+
+        if (PermissionUtils.hasBluetoothPermission(this)) {
+            serviceScope.launch {
+                val slots = getAssignedSlotsUseCase().firstOrNull() ?: return@launch
+                val connectionStates = bleRepository.connectionStateStream.value
+                slots.forEach { (type, slot) ->
+                    val isDisconnected = connectionStates[type] == ConnectionState.DISCONNECTED
+                    if (!slot.macAddress.isNullOrBlank() && slot.autoConnect && isDisconnected) {
+                        bleRepository.connectSlot(slot)
+                    }
+                }
+            }
         }
 
         serviceScope.launch {

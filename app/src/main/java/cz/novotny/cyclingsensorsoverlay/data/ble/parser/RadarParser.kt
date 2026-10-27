@@ -10,6 +10,10 @@ import cz.novotny.cyclingsensorsoverlay.util.AppLogger
  * and vendor custom protocols (e.g., Garmin Varia 0x6A4E3200, Coospo TR70, Magene L508, Bryton Gardia, IGPSPORT).
  *
  * Payload structures handled:
+ * 0) Coospo TR70 Framed BLE Stream (0xFDB1, Header 0xC8):
+ *    - Frame: [0xC8, length, commandId, ...payload..., checksum]
+ *    - Command 0x03 (8 bytes): Device/battery/light mode status -> ignored (returns null)
+ *    - Command 0x24 (18 bytes): 14-byte bit-packed ANT+ Bike Radar Pages 0x30+0x31 for up to 8 targets
  * 1) Garmin Varia BLE Stream (0x6A4E3203):
  *    - Byte 0: Rolling sequence counter or header
  *    - Records (3 bytes per target): [Target ID, Distance (m), Speed (m/s)]
@@ -20,17 +24,29 @@ import cz.novotny.cyclingsensorsoverlay.util.AppLogger
  */
 class RadarParser {
 
+    private var lastLoggedPacketHex: String? = null
+
     /**
      * Parses raw BLE notification bytes into a [RadarData] snapshot containing vehicle threat list.
      *
      * @param data Raw notification payload, or null.
-     * @return [RadarData] containing detected [RadarThreat] targets, or empty list if no threats detected/null payload.
+     * @return [RadarData] containing detected [RadarThreat] targets, or null if payload is null/empty or a non-radar status packet.
      */
     fun parse(data: ByteArray?): RadarData? {
         if (data == null || data.isEmpty()) return null
 
+        val firstByte = data[0].toInt() and 0xFF
         val hexString = data.joinToString(" ") { "%02X".format(it) }
-        AppLogger.d(TAG, "Parsing raw BLE radar packet (len=${data.size}): [$hexString]")
+
+        // Coospo TR70 0xC8-framed protocol ([0xC8, length, commandId, ...payload..., checksum])
+        if (firstByte == 0xC8 && data.size >= 4 && (data[1].toInt() and 0xFF) == data.size) {
+            return parseCoospoC8Frame(data, hexString)
+        }
+
+        if (hexString != lastLoggedPacketHex) {
+            lastLoggedPacketHex = hexString
+            AppLogger.d(TAG, "Parsing raw BLE radar packet (len=${data.size}): [$hexString]")
+        }
         AppLogger.setCustomKey("last_radar_packet_hex", hexString)
 
         val threats = mutableListOf<RadarThreat>()
@@ -48,8 +64,6 @@ class RadarParser {
                 AppLogger.setCustomKey("last_radar_threat_count", 0)
                 return RadarData(threats = emptyList(), timestamp = System.currentTimeMillis())
             }
-
-            val firstByte = data[0].toInt() and 0xFF
 
             // Case 2: Vendor prefix clear payload (e.g. 0xFA, 0x00)
             if (firstByte >= 0xF0 && data.size >= 2 && (data[1].toInt() and 0xFF) == 0) {
@@ -230,6 +244,101 @@ class RadarParser {
 
         return RadarData(
             threats = activeThreats,
+            timestamp = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Parses Coospo TR70 0xC8-framed notifications on characteristic 0xFDB1.
+     *
+     * Frame layout: `[0xC8, length, commandId, ...payload..., checksum]`
+     * - `commandId != 0x24` (e.g. `0x03` 8-byte battery/light status frame): returns `null` so status packets
+     *   do not overwrite active radar threats or reset the radar stale-data watchdog.
+     * - `commandId == 0x24` (18-byte radar targets frame): `data[3..16]` contains 14 bytes of bit-packed
+     *   ANT+ Bike Radar (Pages 0x30 + 0x31) data for up to 8 targets:
+     *   - `data[3..4]`: 2-bit threat levels for targets 0..7 (`0` = None, `1` = Approaching, `2` = Fast Approaching)
+     *   - `data[5..6]`: 2-bit threat sides for targets 0..7
+     *   - `data[7..9]`: 24-bit big-endian packed 6-bit ranges for targets 0..3 (`LSB = 3.125 m`)
+     *   - `data[10..12]`: 24-bit big-endian packed 6-bit ranges for targets 4..7 (`LSB = 3.125 m`)
+     *   - `data[13..16]`: 4-bit nibbles of closing speed for targets 0..7 (`LSB = 3.04 m/s = 10.944 km/h`)
+     */
+    private fun parseCoospoC8Frame(data: ByteArray, hexString: String): RadarData? {
+        val commandId = data[2].toInt() and 0xFF
+        if (commandId != 0x24) {
+            // Non-radar status/battery/light-mode packet (e.g., 0x03) -> ignore completely
+            return null
+        }
+        if (data.size < 18) return null
+
+        val isChanged = hexString != lastLoggedPacketHex
+        if (isChanged) {
+            lastLoggedPacketHex = hexString
+            AppLogger.d(TAG, "Parsing Coospo 0xC8 radar packet (len=${data.size}): [$hexString]")
+        }
+        AppLogger.setCustomKey("last_radar_packet_hex", hexString)
+
+        // Fast path: all 14 payload bytes (indices 3..16) are zero -> road is clear
+        if ((3..16).all { (data[it].toInt() and 0xFF) == 0 }) {
+            if (isChanged) {
+                AppLogger.d(TAG, "Coospo 0xC8 0x24 radar packet -> 0 active threats (Clear)")
+            }
+            AppLogger.setCustomKey("last_radar_threat_count", 0)
+            return RadarData(threats = emptyList(), timestamp = System.currentTimeMillis())
+        }
+
+        val threats = mutableListOf<RadarThreat>()
+        val threatsBits = (data[3].toInt() and 0xFF) or ((data[4].toInt() and 0xFF) shl 8)
+        val rangeChunkA = ((data[7].toInt() and 0xFF) shl 16) or
+                ((data[8].toInt() and 0xFF) shl 8) or
+                (data[9].toInt() and 0xFF)
+        val rangeChunkB = ((data[10].toInt() and 0xFF) shl 16) or
+                ((data[11].toInt() and 0xFF) shl 8) or
+                (data[12].toInt() and 0xFF)
+
+        for (i in 0 until 8) {
+            val threatCode = (threatsBits shr (2 * i)) and 0x03
+            val threatLevel = when (threatCode) {
+                1 -> ThreatLevel.APPROACHING
+                2, 3 -> ThreatLevel.HIGH_SPEED
+                else -> ThreatLevel.NONE
+            }
+            if (threatLevel == ThreatLevel.NONE) continue
+
+            val rawRange = if (i < 4) {
+                (rangeChunkA shr (6 * i)) and 0x3F
+            } else {
+                (rangeChunkB shr (6 * (i - 4))) and 0x3F
+            }
+            val distanceMeters = (rawRange * 3.125f).coerceIn(0f, 200f)
+
+            val speedByte = data[13 + i / 2].toInt() and 0xFF
+            val rawSpeed = (speedByte shr ((i % 2) * 4)) and 0x0F
+            val speedKmH = if (rawSpeed in 1..14) {
+                (rawSpeed * 3.04f * 3.6f).coerceIn(0f, 200f)
+            } else {
+                0f
+            }
+
+            threats.add(
+                RadarThreat(
+                    id = i + 1,
+                    threatLevel = threatLevel,
+                    distanceMeters = distanceMeters,
+                    speedKmH = speedKmH
+                )
+            )
+        }
+
+        if (isChanged) {
+            AppLogger.d(
+                TAG,
+                "Parsed Coospo 0xC8 RadarData -> active threats: ${threats.size}, details: $threats"
+            )
+        }
+        AppLogger.setCustomKey("last_radar_threat_count", threats.size)
+
+        return RadarData(
+            threats = threats,
             timestamp = System.currentTimeMillis()
         )
     }

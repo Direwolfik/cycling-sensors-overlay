@@ -316,4 +316,51 @@ class ParsersTest {
         val largeResult = parser.parse(largeRandom)
         assertNotNull(largeResult)
     }
+
+    @Test
+    fun radarParser_parsesCoospoTr70C8FramedPacketsWithoutPhantomVehicles() {
+        val parser = RadarParser()
+
+        // 1. Coospo TR70 0x03 status/battery packet (8 bytes): must return null so active threats are not wiped
+        val statusPacket = hexToBytes("C8 08 03 02 45 55 0B 7A")
+        assertNull("Status packet 0x03 must be ignored (return null)", parser.parse(statusPacket))
+
+        // 2. Coospo TR70 0x24 empty-road clear packet (18 bytes): must return 0 threats (no phantom 36m vehicle)
+        val clearPacket = hexToBytes("C8 12 24 00 00 00 00 00 00 00 00 00 00 00 00 00 00 FE")
+        val clearResult = parser.parse(clearPacket)
+        assertNotNull(clearResult)
+        assertTrue("Clear 0x24 packet must produce 0 threats", clearResult!!.threats.isEmpty())
+
+        // 3. Single approaching vehicle at 21.875m (7 * 3.125m), speed 10.944 km/h (1 * 3.04 m/s)
+        val singleTargetPacket = hexToBytes("C8 12 24 01 00 00 00 00 00 07 00 00 00 01 00 00 00 07")
+        val singleResult = parser.parse(singleTargetPacket)
+        assertNotNull(singleResult)
+        assertEquals(1, singleResult!!.threats.size)
+        val t1 = singleResult.threats[0]
+        assertEquals(1, t1.id)
+        assertEquals(ThreatLevel.APPROACHING, t1.threatLevel)
+        assertEquals(21.875f, t1.distanceMeters, 0.01f)
+        assertEquals(10.944f, t1.speedKmH, 0.05f)
+
+        // 4. Two approaching vehicles at 18.75m (6 * 3.125m) and 43.75m (14 * 3.125m), checksum 0x99 must not create phantom 153m vehicle
+        val twoTargetsPacket = hexToBytes("C8 12 24 05 00 00 00 00 03 86 00 00 00 11 00 00 00 99")
+        val twoResult = parser.parse(twoTargetsPacket)
+        assertNotNull(twoResult)
+        assertEquals(2, twoResult!!.threats.size)
+        assertEquals(18.75f, twoResult.threats[0].distanceMeters, 0.01f)
+        assertEquals(43.75f, twoResult.threats[1].distanceMeters, 0.01f)
+
+        // 5. High-speed vehicle at 9.375m (3 * 3.125m), speed 32.832 km/h (3 * 3.04 m/s)
+        val highSpeedPacket = hexToBytes("C8 12 24 02 00 00 00 00 00 03 00 00 00 03 00 00 00 06")
+        val highSpeedResult = parser.parse(highSpeedPacket)
+        assertNotNull(highSpeedResult)
+        assertEquals(1, highSpeedResult!!.threats.size)
+        assertEquals(ThreatLevel.HIGH_SPEED, highSpeedResult.threats[0].threatLevel)
+        assertEquals(9.375f, highSpeedResult.threats[0].distanceMeters, 0.01f)
+        assertEquals(32.832f, highSpeedResult.threats[0].speedKmH, 0.05f)
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        return hex.trim().split("\\s+".toRegex()).map { it.toInt(16).toByte() }.toByteArray()
+    }
 }

@@ -61,8 +61,11 @@ fun DashboardScreen(
     val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        if (PermissionUtils.hasBluetoothPermission(context) && PermissionUtils.hasOverlayPermission(context)) {
-            OverlayService.startService(context)
+        if (PermissionUtils.hasBluetoothPermission(context)) {
+            viewModel.autoConnectSavedSlots()
+            if (PermissionUtils.hasOverlayPermission(context)) {
+                OverlayService.startService(context)
+            }
         }
     }
 
@@ -76,6 +79,9 @@ fun DashboardScreen(
     }
 
     LaunchedEffect(Unit) {
+        if (PermissionUtils.hasBluetoothPermission(context)) {
+            viewModel.autoConnectSavedSlots()
+        }
         if (PermissionUtils.hasLocationPermission(context)) {
             viewModel.startGpsTracking()
         } else {

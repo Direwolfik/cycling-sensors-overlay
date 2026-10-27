@@ -42,10 +42,17 @@ data class DiscoveredDevice(
     }
 
     /**
-     * Checks if the device matches a Cycling Radar sensor via standard UUID 0x183C, Garmin Varia UUID 0x6A4E3200, custom UUID 0x6E40, or keywords.
+     * Checks if the device matches a Cycling Radar sensor via standard UUID 0x183C, Garmin Varia UUID 0x6A4E3200, Coospo UUID 0xFDB0, custom UUID 0x6E40, or keywords.
      */
     fun isRadarMatch(): Boolean {
-        if (serviceUuids.any { uuidMatches(it, "183c") || uuidMatches(it, "6a4e3200") || uuidMatches(it, "6e400001") }) return true
+        if (serviceUuids.any {
+                uuidMatches(it, "183c") ||
+                uuidMatches(it, "6a4e3200") ||
+                uuidMatches(it, "6e400001") ||
+                uuidMatches(it, "fdb0") ||
+                uuidMatches(it, "fdb1")
+            }
+        ) return true
         val lowerName = name?.lowercase(Locale.ROOT) ?: return false
         val keywords = listOf("tr70", "radar", "varia", "coospo", "rtl", "magene", "l508", "gardia", "bryton", "igpsport")
         return keywords.any { lowerName.contains(it) }

@@ -30,4 +30,18 @@ object BleGattUtils {
         val s = serviceUuid.toString().lowercase(Locale.ROOT)
         return s.startsWith("00001800") || s.startsWith("00001801")
     }
+
+    /**
+     * Returns true if the service is a standard system/metadata service (Generic Access 0x1800,
+     * Generic Attribute 0x1801, Device Information 0x180A, Battery 0x180F) or Nordic DFU service (0xFE59).
+     */
+    fun isSystemOrDfuService(serviceUuid: UUID): Boolean {
+        val s = serviceUuid.toString().lowercase(Locale.ROOT)
+        return s.startsWith("00001800") ||
+               s.startsWith("00001801") ||
+               s.startsWith("0000180a") ||
+               s.startsWith("0000180f") ||
+               s.startsWith("0000fe59") ||
+               s.startsWith("8ec9")
+    }
 }

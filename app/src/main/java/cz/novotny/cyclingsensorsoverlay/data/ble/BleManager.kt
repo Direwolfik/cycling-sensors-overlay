@@ -222,6 +222,15 @@ class BleManager(
             return
         }
 
+        val currentState = _connectionStates.value[slot.sensorType]
+        if (activeSlots[slot.sensorType]?.macAddress == mac &&
+            activeGatts[slot.sensorType] != null &&
+            (currentState == ConnectionState.CONNECTED || currentState == ConnectionState.CONNECTING)
+        ) {
+            AppLogger.d(TAG, "Slot ${slot.sensorType} is already $currentState to $mac; skipping duplicate connect")
+            return
+        }
+
         disconnectSlot(slot.sensorType)
 
         activeSlots[slot.sensorType] = slot
@@ -262,6 +271,8 @@ class BleManager(
     }
 
     private val pendingGattWrites = ConcurrentHashMap<BluetoothGatt, Queue<GattWriteOp>>()
+    private val gattWriteWatchdogJobs = ConcurrentHashMap<BluetoothGatt, Job>()
+    private var lastLoggedRadarHex: String? = null
 
     private fun queueCccdWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
         val descriptor = characteristic.getDescriptor(BleConstants.CCCD_UUID) ?: run {
@@ -300,10 +311,22 @@ class BleManager(
     }
 
     private fun processNextGattWrite(gatt: BluetoothGatt) {
+        gattWriteWatchdogJobs.remove(gatt)?.cancel()
         val queue = pendingGattWrites[gatt] ?: return
         val next = queue.peek() ?: run {
             pendingGattWrites.remove(gatt)
             return
+        }
+
+        // Schedule a 2-second watchdog so a dropped GATT callback never stalls subsequent writes
+        gattWriteWatchdogJobs[gatt] = scope.launch {
+            delay(2000L)
+            val currentQueue = pendingGattWrites[gatt]
+            if (currentQueue != null && currentQueue.peek() === next) {
+                AppLogger.w(TAG, "GATT write callback timed out after 2s; advancing write queue")
+                currentQueue.poll()
+                processNextGattWrite(gatt)
+            }
         }
 
         when (next) {
@@ -341,13 +364,23 @@ class BleManager(
                 val characteristic = next.characteristic
                 val value = next.value
                 val hex = value.joinToString(" ") { "%02X".format(it) }
+                val props = characteristic.properties
+                val writeType = if ((props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0 &&
+                    (props and BluetoothGattCharacteristic.PROPERTY_WRITE) == 0
+                ) {
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                } else {
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                }
                 val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     gatt.writeCharacteristic(
                         characteristic,
                         value,
-                        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                        writeType
                     )
                 } else {
+                    @Suppress("DEPRECATION")
+                    characteristic.writeType = writeType
                     @Suppress("DEPRECATION")
                     characteristic.value = value
                     @Suppress("DEPRECATION")
@@ -385,6 +418,7 @@ class BleManager(
         val gatt = activeGatts.remove(sensorType)
         activeSlots.remove(sensorType)
         if (gatt != null) {
+            gattWriteWatchdogJobs.remove(gatt)?.cancel()
             pendingGattWrites.remove(gatt)
             try {
                 gatt.disconnect()
@@ -431,6 +465,8 @@ class BleManager(
                         putInt("status", status)
                     }
 
+                    gattWriteWatchdogJobs.remove(gatt)?.cancel()
+                    pendingGattWrites.remove(gatt)
                     gatt.close()
                     activeGatts.remove(sensorType)
                     handlers[sensorType]?.onDisconnected()
@@ -560,10 +596,13 @@ class BleManager(
             val value = characteristic.value ?: return
             if (sensorType == SensorType.RADAR) {
                 val hexString = value.joinToString(" ") { "%02X".format(it) }
-                AppLogger.d(
-                    TAG,
-                    "onCharacteristicChanged (legacy) [RADAR] [Char ${characteristic.uuid}]: $hexString"
-                )
+                if (hexString != lastLoggedRadarHex) {
+                    lastLoggedRadarHex = hexString
+                    AppLogger.d(
+                        TAG,
+                        "onCharacteristicChanged (legacy) [RADAR] [Char ${characteristic.uuid}]: $hexString"
+                    )
+                }
             }
             handlers[sensorType]?.onDataReceived(characteristic, value)
         }
@@ -575,10 +614,13 @@ class BleManager(
         ) {
             if (sensorType == SensorType.RADAR) {
                 val hexString = value.joinToString(" ") { "%02X".format(it) }
-                AppLogger.d(
-                    TAG,
-                    "onCharacteristicChanged [RADAR] [Char ${characteristic.uuid}]: $hexString"
-                )
+                if (hexString != lastLoggedRadarHex) {
+                    lastLoggedRadarHex = hexString
+                    AppLogger.d(
+                        TAG,
+                        "onCharacteristicChanged [RADAR] [Char ${characteristic.uuid}]: $hexString"
+                    )
+                }
             }
             handlers[sensorType]?.onDataReceived(characteristic, value)
         }

@@ -83,6 +83,34 @@ class BleSensorHandlersTest {
         assertNull(handler.dataStream.value)
     }
 
+    @Test
+    fun radarSensorHandler_ignoresCoospoStatusPacketAndPreservesActiveThreats() = runTest {
+        val handler = RadarSensorHandler(scope = this)
+        val char = mockChar()
+
+        // 1. Receive active radar target packet (C8 12 24 ...)
+        val targetPacket = "C8 12 24 01 00 00 00 00 00 07 00 00 00 01 00 00 00 07"
+            .split(" ").map { it.toInt(16).toByte() }.toByteArray()
+        handler.onDataReceived(char, targetPacket)
+        assertEquals(1, handler.dataStream.value?.threats?.size)
+        assertEquals(21.875f, handler.dataStream.value?.threats?.first()?.distanceMeters ?: 0f, 0.01f)
+
+        // 2. Receive interleaved Coospo 0x03 status packet -> must NOT clear active threat
+        val statusPacket = "C8 08 03 02 45 55 0B 7A"
+            .split(" ").map { it.toInt(16).toByte() }.toByteArray()
+        handler.onDataReceived(char, statusPacket)
+        assertEquals(1, handler.dataStream.value?.threats?.size)
+        assertEquals(21.875f, handler.dataStream.value?.threats?.first()?.distanceMeters ?: 0f, 0.01f)
+
+        // 3. Receive Coospo 0x24 empty-road clear packet -> must clear threats
+        val clearPacket = "C8 12 24 00 00 00 00 00 00 00 00 00 00 00 00 00 00 FE"
+            .split(" ").map { it.toInt(16).toByte() }.toByteArray()
+        handler.onDataReceived(char, clearPacket)
+        assertTrue(handler.dataStream.value?.threats?.isEmpty() == true)
+
+        handler.onDisconnected()
+    }
+
     private fun mockChar(): android.bluetooth.BluetoothGattCharacteristic {
         return android.bluetooth.BluetoothGattCharacteristic(
             java.util.UUID.randomUUID(),

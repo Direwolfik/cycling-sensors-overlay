@@ -21,6 +21,11 @@ object BleConstants {
     val GARMIN_VARIA_DATA_V2_CHAR_UUID: UUID = UUID.fromString("6a4e3204-667b-11e3-949a-0800200c9a66")
     val GARMIN_VARIA_CONTROL_CHAR_UUID: UUID = UUID.fromString("6a4e3202-667b-11e3-949a-0800200c9a66")
 
+    // Coospo TR70 Proprietary Radar Service (0xFDB0) & Characteristics (0xFDB1 Notify, 0xFDB2 Write)
+    val COOSPO_RADAR_SERVICE_UUID: UUID = UUID.fromString("0000fdb0-0000-1000-8000-00805f9b34fb")
+    val COOSPO_RADAR_NOTIFY_CHAR_UUID: UUID = UUID.fromString("0000fdb1-0000-1000-8000-00805f9b34fb")
+    val COOSPO_RADAR_WRITE_CHAR_UUID: UUID = UUID.fromString("0000fdb2-0000-1000-8000-00805f9b34fb")
+
     // Nordic UART Service (Used by Coospo TR70, Magene L508, Bryton Gardia, etc.)
     val NORDIC_UART_SERVICE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
     val NORDIC_UART_TX_CHAR_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")

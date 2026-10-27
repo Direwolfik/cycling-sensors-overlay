@@ -5,7 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import cz.novotny.cyclingsensorsoverlay.data.location.GpsLocationManager
 import cz.novotny.cyclingsensorsoverlay.domain.model.CombinedSensorState
+import cz.novotny.cyclingsensorsoverlay.domain.model.ConnectionState
 import cz.novotny.cyclingsensorsoverlay.domain.repository.BleRepository
+import cz.novotny.cyclingsensorsoverlay.domain.usecase.GetAssignedSlotsUseCase
 import cz.novotny.cyclingsensorsoverlay.domain.usecase.ObserveSensorDataUseCase
 import cz.novotny.cyclingsensorsoverlay.service.OverlayService
 import cz.novotny.cyclingsensorsoverlay.util.PermissionUtils
@@ -13,7 +15,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /**
  * ViewModel for the main dashboard screen.
@@ -24,7 +28,8 @@ import kotlinx.coroutines.flow.stateIn
 class DashboardViewModel(
     observeSensorDataUseCase: ObserveSensorDataUseCase,
     private val bleRepository: BleRepository,
-    private val gpsLocationManager: GpsLocationManager
+    private val gpsLocationManager: GpsLocationManager,
+    private val getAssignedSlotsUseCase: GetAssignedSlotsUseCase? = null
 ) : ViewModel() {
 
     /** StateFlow emitting real-time combined telemetry data and sensor slot connection states. */
@@ -61,6 +66,24 @@ class DashboardViewModel(
         gpsLocationManager.startLocationUpdates()
     }
 
+    /**
+     * Checks saved sensor slot configurations and automatically initiates BLE connection for disconnected slots
+     * with valid MAC addresses and autoConnect enabled.
+     */
+    fun autoConnectSavedSlots() {
+        val slotsUseCase = getAssignedSlotsUseCase ?: return
+        viewModelScope.launch {
+            val slots = slotsUseCase().firstOrNull() ?: return@launch
+            val connectionStates = bleRepository.connectionStateStream.value
+            slots.forEach { (type, slot) ->
+                val isDisconnected = connectionStates[type] == ConnectionState.DISCONNECTED
+                if (!slot.macAddress.isNullOrBlank() && slot.autoConnect && isDisconnected) {
+                    bleRepository.connectSlot(slot)
+                }
+            }
+        }
+    }
+
     /** Toggles rear radar telemetry simulation mode. */
     fun toggleRadarSimulation() {
         val current = isRadarSimulated.value
@@ -88,6 +111,7 @@ class DashboardViewModel(
             } else if (!hasLocation) {
                 _showLocationPermissionDialog.value = true
             } else {
+                autoConnectSavedSlots()
                 startGpsTracking()
                 OverlayService.startService(context)
             }
