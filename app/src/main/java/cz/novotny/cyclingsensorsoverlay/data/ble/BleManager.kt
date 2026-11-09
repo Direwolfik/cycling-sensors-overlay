@@ -364,23 +364,15 @@ class BleManager(
                 val characteristic = next.characteristic
                 val value = next.value
                 val hex = value.joinToString(" ") { "%02X".format(it) }
-                val props = characteristic.properties
-                val writeType = if ((props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0 &&
-                    (props and BluetoothGattCharacteristic.PROPERTY_WRITE) == 0
-                ) {
-                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                } else {
-                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                }
                 val res = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     gatt.writeCharacteristic(
                         characteristic,
                         value,
-                        writeType
+                        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                     )
                 } else {
                     @Suppress("DEPRECATION")
-                    characteristic.writeType = writeType
+                    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                     @Suppress("DEPRECATION")
                     characteristic.value = value
                     @Suppress("DEPRECATION")

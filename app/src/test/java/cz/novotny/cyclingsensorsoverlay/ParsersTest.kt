@@ -358,6 +358,16 @@ class ParsersTest {
         assertEquals(ThreatLevel.HIGH_SPEED, highSpeedResult.threats[0].threatLevel)
         assertEquals(9.375f, highSpeedResult.threats[0].distanceMeters, 0.01f)
         assertEquals(32.832f, highSpeedResult.threats[0].speedKmH, 0.05f)
+
+        // 6. Real Build 18 trajectory packet: 2 vehicles at 9.375m (3 * 3.125m) and 37.5m (12 * 3.125m), checksum 0x1B
+        val twoClosePacket = hexToBytes("C8 12 24 06 00 00 00 00 03 03 00 00 00 11 00 00 00 1B")
+        val twoCloseResult = parser.parse(twoClosePacket)
+        assertNotNull(twoCloseResult)
+        assertEquals(2, twoCloseResult!!.threats.size)
+        assertEquals(ThreatLevel.HIGH_SPEED, twoCloseResult.threats[0].threatLevel)
+        assertEquals(9.375f, twoCloseResult.threats[0].distanceMeters, 0.01f)
+        assertEquals(ThreatLevel.APPROACHING, twoCloseResult.threats[1].threatLevel)
+        assertEquals(37.5f, twoCloseResult.threats[1].distanceMeters, 0.01f)
     }
 
     private fun hexToBytes(hex: String): ByteArray {
